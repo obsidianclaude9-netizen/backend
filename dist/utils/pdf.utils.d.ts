@@ -6,5 +6,8 @@ export interface TicketPDFData {
     validUntil: Date;
     qrCodePath: string;
 }
+/**
+ * Generate ticket PDF and save to local storage
+ */
 export declare const generateTicketPDF: (ticketData: TicketPDFData) => Promise<string>;
 //# sourceMappingURL=pdf.utils.d.ts.map

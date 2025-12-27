@@ -1,14 +1,13 @@
-// src/app.ts
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
+import path from 'path';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler';
 import { sanitizeInput } from './middleware/validate';
 import { apiLimiter } from './middleware/rateLimit';
 import { logger } from './utils/logger';
 import { initializeSentry, getSentryMiddleware } from './config/monitoring';
 import advancedSettingsRoutes from './modules/settings/advancedSettings.routes';
-// Import routes
 import authRoutes from './modules/auth/auth.routes';
 import ticketRoutes from './modules/tickets/ticket.routes';
 import orderRoutes from './modules/orders/order.routes';
@@ -18,6 +17,8 @@ import analyticsRoutes from './modules/analytics/analytics.routes';
 import notificationRoutes from './modules/notifications/notification.routes';
 import subscriberRoutes from './modules/subscribers/subscriber.routes';
 import settingsRoutes from './modules/settings/settings.routes';
+import batchRoutes from './modules/batch/batch.routes';
+import monitoringRoutes from './modules/monitoring/monitoring.routes';
 
 const app = express();
 
@@ -25,10 +26,9 @@ initializeSentry(app);
 
 const sentryMiddleware = getSentryMiddleware();
 
-//  Sentry request handler  
 app.use(sentryMiddleware.requestHandler);
 app.use(sentryMiddleware.tracingHandler);
-app.use('/api/settings/advanced', apiLimiter, advancedSettingsRoutes);
+
 app.use((req, _res, next) => {
   logger.info(`${req.method} ${req.path}`, {
     ip: req.ip,
@@ -44,8 +44,6 @@ app.get('/health', (_req, res) => {
     uptime: process.uptime(),
   });
 });
-
-// Security middleware
 
 app.use(helmet({
   contentSecurityPolicy: {
@@ -59,7 +57,6 @@ app.use(helmet({
   crossOriginEmbedderPolicy: false,
 }));
 
-// CORS
 app.use(cors({
   origin: process.env.CORS_ORIGIN?.split(',') || 'http://localhost:3000',
   credentials: true,
@@ -67,31 +64,14 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization'],
 }));
 
-// Body parsing
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
-// Input sanitization
 app.use(sanitizeInput);
 
-app.use((req, _res, next) => {
-  logger.info(`${req.method} ${req.path}`, {
-    ip: req.ip,
-    userAgent: req.get('user-agent'),
-  });
-  next();
-});
+// Serve static files from uploads directory
+app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
 
-
-app.get('/health', (_req, res) => {
-  res.json({
-    status: 'ok',
-    timestamp: new Date().toISOString(),
-    uptime: process.uptime(),
-  });
-});
-
-// API routes
 app.use('/api/auth', authRoutes);
 app.use('/api/tickets', apiLimiter, ticketRoutes);
 app.use('/api/orders', apiLimiter, orderRoutes);
@@ -101,14 +81,13 @@ app.use('/api/analytics', apiLimiter, analyticsRoutes);
 app.use('/api/notifications', apiLimiter, notificationRoutes);
 app.use('/api/subscribers', apiLimiter, subscriberRoutes);
 app.use('/api/settings', apiLimiter, settingsRoutes);
+app.use('/api/settings/advanced', apiLimiter, advancedSettingsRoutes);
+app.use('/api/batch', apiLimiter, batchRoutes);
+app.use('/api/monitoring', monitoringRoutes);
 
-// 404 handler
 app.use(notFoundHandler);
 
-//  Sentry error handler
 app.use(sentryMiddleware.errorHandler);
-app.use(errorHandler);
-// Error handler 
 app.use(errorHandler);
 
 export default app;

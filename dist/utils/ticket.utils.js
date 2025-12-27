@@ -4,27 +4,20 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.isTicketExpired = exports.addDays = exports.daysBetween = exports.isValidTicketCodeFormat = exports.generateQRCode = exports.decryptTicketData = exports.encryptTicketData = exports.generateTicketCode = void 0;
-// src/utils/ticket.utils.ts
 const qrcode_1 = __importDefault(require("qrcode"));
 const crypto_1 = __importDefault(require("crypto"));
 const path_1 = __importDefault(require("path"));
-const promises_1 = __importDefault(require("fs/promises"));
+const fs_1 = __importDefault(require("fs"));
 const logger_1 = require("./logger");
 const ENCRYPTION_KEY = Buffer.from(process.env.QR_ENCRYPTION_KEY, 'hex');
 const IV_LENGTH = 16;
 const ALGORITHM = 'aes-256-cbc';
-/**
- * Generate unique ticket code: JGPNR-YYYY-XXXXXX
- */
 const generateTicketCode = () => {
     const year = new Date().getFullYear();
     const random = crypto_1.default.randomBytes(3).toString('hex').toUpperCase();
     return `JGPNR-${year}-${random}`;
 };
 exports.generateTicketCode = generateTicketCode;
-/**
- * Encrypt ticket data for QR code
- */
 const encryptTicketData = (data) => {
     const iv = crypto_1.default.randomBytes(IV_LENGTH);
     const cipher = crypto_1.default.createCipheriv(ALGORITHM, ENCRYPTION_KEY, iv);
@@ -33,9 +26,6 @@ const encryptTicketData = (data) => {
     return iv.toString('hex') + ':' + encrypted;
 };
 exports.encryptTicketData = encryptTicketData;
-/**
- * Decrypt ticket data from QR code
- */
 const decryptTicketData = (encryptedData) => {
     const [ivHex, encrypted] = encryptedData.split(':');
     const iv = Buffer.from(ivHex, 'hex');
@@ -46,13 +36,10 @@ const decryptTicketData = (encryptedData) => {
 };
 exports.decryptTicketData = decryptTicketData;
 /**
- * Generate QR code and save to file
+ * Generate QR code and save to local storage
  */
 const generateQRCode = async (ticketCode, ticketData) => {
     try {
-        const qrDir = process.env.QR_CODE_DIR || './uploads/qrcodes';
-        await promises_1.default.mkdir(qrDir, { recursive: true });
-        // Prepare data for QR
         const dataString = JSON.stringify({
             code: ticketCode,
             orderId: ticketData.orderId,
@@ -61,9 +48,12 @@ const generateQRCode = async (ticketCode, ticketData) => {
             validUntil: ticketData.validUntil,
             timestamp: Date.now(),
         });
-        // Encrypt data
         const encrypted = (0, exports.encryptTicketData)(dataString);
-        // Generate QR code
+        // Ensure QR code directory exists
+        const qrDir = process.env.QR_CODE_DIR || './uploads/qrcodes';
+        if (!fs_1.default.existsSync(qrDir)) {
+            fs_1.default.mkdirSync(qrDir, { recursive: true });
+        }
         const filename = `${ticketCode}.png`;
         const filepath = path_1.default.join(qrDir, filename);
         await qrcode_1.default.toFile(filepath, encrypted, {
@@ -76,8 +66,9 @@ const generateQRCode = async (ticketCode, ticketData) => {
                 light: '#FFFFFF',
             },
         });
-        logger_1.logger.info(`QR code generated: ${filename}`);
-        return filepath;
+        logger_1.logger.info(`QR code generated: ${ticketCode}`);
+        // Return relative path for database storage
+        return `/uploads/qrcodes/${filename}`;
     }
     catch (error) {
         logger_1.logger.error('QR code generation failed:', error);
@@ -85,34 +76,22 @@ const generateQRCode = async (ticketCode, ticketData) => {
     }
 };
 exports.generateQRCode = generateQRCode;
-/**
- * Validate ticket code format
- */
 const isValidTicketCodeFormat = (code) => {
     const regex = /^JGPNR-\d{4}-[A-Z0-9]{6}$/;
     return regex.test(code);
 };
 exports.isValidTicketCodeFormat = isValidTicketCodeFormat;
-/**
- * Calculate days between two dates
- */
 const daysBetween = (date1, date2) => {
     const diffTime = Math.abs(date2.getTime() - date1.getTime());
     return Math.ceil(diffTime / (1000 * 60 * 60 * 24));
 };
 exports.daysBetween = daysBetween;
-/**
- * Add days to date
- */
 const addDays = (date, days) => {
     const result = new Date(date);
     result.setDate(result.getDate() + days);
     return result;
 };
 exports.addDays = addDays;
-/**
- * Check if ticket is expired
- */
 const isTicketExpired = (validUntil) => {
     return new Date() > validUntil;
 };

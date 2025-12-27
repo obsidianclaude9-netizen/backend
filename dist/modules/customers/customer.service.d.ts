@@ -1,9 +1,6 @@
 import { Prisma } from '@prisma/client';
 import { CreateCustomerInput, UpdateCustomerInput, ListCustomersInput } from './customer.schema';
 export declare class CustomerService {
-    /**
-     * Create new customer
-     */
     createCustomer(data: CreateCustomerInput): Promise<{
         status: string;
         id: string;
@@ -22,21 +19,28 @@ export declare class CustomerService {
         documentPath: string | null;
         documentName: string | null;
     }>;
+    /**
+     * Upload customer document to local storage
+     */
     uploadDocument(customerId: string, file: Express.Multer.File): Promise<{
         message: string;
         filename: string;
         path: string;
     }>;
+    /**
+     * Delete customer document from local storage
+     */
     deleteDocument(customerId: string): Promise<{
         message: string;
     }>;
+    /**
+     * Get customer document (returns file path for local serving)
+     */
     getDocument(customerId: string): Promise<{
         path: string;
         name: string | null;
+        relativePath: string;
     }>;
-    /**
-     * List customers with filters
-     */
     listCustomers(filters: ListCustomersInput): Promise<{
         customers: ({
             _count: {
@@ -67,9 +71,6 @@ export declare class CustomerService {
             pages: number;
         };
     }>;
-    /**
-     * Get customer by ID
-     */
     getCustomer(customerId: string): Promise<{
         orders: ({
             tickets: {
@@ -106,9 +107,6 @@ export declare class CustomerService {
         documentPath: string | null;
         documentName: string | null;
     }>;
-    /**
-     * Update customer
-     */
     updateCustomer(customerId: string, data: UpdateCustomerInput): Promise<{
         status: string;
         id: string;
@@ -127,15 +125,9 @@ export declare class CustomerService {
         documentPath: string | null;
         documentName: string | null;
     }>;
-    /**
-     * Delete customer (soft delete)
-     */
     deleteCustomer(customerId: string): Promise<{
         message: string;
     }>;
-    /**
-     * Get customer purchase history
-     */
     getCustomerOrders(customerId: string, page?: number, limit?: number): Promise<{
         orders: ({
             tickets: {
@@ -162,9 +154,6 @@ export declare class CustomerService {
             pages: number;
         };
     }>;
-    /**
-     * Get customer statistics
-     */
     getCustomerStats(): Promise<{
         total: number;
         active: number;

@@ -1,10 +1,11 @@
 export declare class CacheService {
+    private readonly DEFAULT_TTL;
     /**
-     * Get cached value
+     * Get cached value (with database fallback for analytics)
      */
     get<T>(key: string): Promise<T | null>;
     /**
-     * Set cached value
+     * Set cached value (dual write to Redis and DB for analytics)
      */
     set(key: string, value: any, ttl?: number): Promise<void>;
     /**
@@ -31,6 +32,26 @@ export declare class CacheService {
      * Set expiration
      */
     expire(key: string, seconds: number): Promise<void>;
+    /**
+     * Get cache statistics
+     */
+    getStats(): Promise<{
+        redisKeys: number;
+        dbCacheRecords: number;
+        expiredRecords: number;
+    }>;
+    /**
+     * Cleanup expired cache entries
+     */
+    cleanupExpired(): Promise<number>;
+    /**
+     * Generate cache key for analytics
+     */
+    generateAnalyticsKey(endpoint: string, params: Record<string, any>): string;
+    /**
+     * Invalidate all analytics cache
+     */
+    invalidateAllAnalytics(): Promise<void>;
 }
 export declare const cacheService: CacheService;
 //# sourceMappingURL=cache.service.d.ts.map

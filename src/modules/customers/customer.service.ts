@@ -1,20 +1,16 @@
-// src/modules/customers/customer.service.ts
 import { Prisma } from '@prisma/client';
 import prisma from '../../config/database';
 import { AppError } from '../../middleware/errorHandler';
-import fs from 'fs';
 import {
   CreateCustomerInput,
   UpdateCustomerInput,
   ListCustomersInput,
 } from './customer.schema';
 import { logger } from '../../utils/logger';
-import { deleteFile } from '../../middleware/upload';
+import path from 'path';
+import fs from 'fs';
 
 export class CustomerService {
-  /**
-   * Create new customer
-   */
   async createCustomer(data: CreateCustomerInput) {
     const customer = await prisma.customer.create({
       data,
@@ -23,37 +19,68 @@ export class CustomerService {
     logger.info(`Customer created: ${customer.email}`);
     return customer;
   }
- async uploadDocument(customerId: string, file: Express.Multer.File) {
-  const customer = await prisma.customer.findUnique({
-    where: { id: customerId },
-  });
 
-  if (!customer) {
-    deleteFile(file.path);
-    throw new AppError(404, 'Customer not found');
+  /**
+   * Upload customer document to local storage
+   */
+  async uploadDocument(customerId: string, file: Express.Multer.File) {
+    const customer = await prisma.customer.findUnique({
+      where: { id: customerId },
+    });
+
+    if (!customer) {
+      throw new AppError(404, 'Customer not found');
+    }
+
+    // Delete old document if exists
+    if (customer.documentPath) {
+      try {
+        const oldPath = path.join(process.cwd(), customer.documentPath);
+        if (fs.existsSync(oldPath)) {
+          fs.unlinkSync(oldPath);
+          logger.info(`Old document deleted for customer: ${customerId}`);
+        }
+      } catch (error) {
+        logger.warn('Failed to delete old document:', error);
+      }
+    }
+
+    // Ensure customer documents directory exists
+    const customerDocsDir = './uploads/customer-documents';
+    const customerSpecificDir = path.join(customerDocsDir, customerId);
+    
+    if (!fs.existsSync(customerSpecificDir)) {
+      fs.mkdirSync(customerSpecificDir, { recursive: true });
+    }
+
+    // Save new document
+    const filename = `${Date.now()}-${file.originalname}`;
+    const filepath = path.join(customerSpecificDir, filename);
+    
+    fs.writeFileSync(filepath, file.buffer);
+
+    const relativePath = `/uploads/customer-documents/${customerId}/${filename}`;
+
+    await prisma.customer.update({
+      where: { id: customerId },
+      data: {
+        documentPath: relativePath,
+        documentName: file.originalname,
+      },
+    });
+
+    logger.info(`Document uploaded for customer: ${customerId}`);
+
+    return {
+      message: 'Document uploaded successfully',
+      filename: file.originalname,
+      path: relativePath
+    };
   }
 
-  if (customer.documentPath) {
-    deleteFile(customer.documentPath);
-  }
-
-  await prisma.customer.update({
-    where: { id: customerId },
-    data: {
-      documentPath: file.path,
-      documentName: file.originalname,
-    },
-  });
-
-  logger.info(`Document uploaded for customer: ${customerId}`);
-
-  return {
-    message: 'Document uploaded successfully',
-    filename: file.filename,
-    path: file.path,
-  };
-}
-
+  /**
+   * Delete customer document from local storage
+   */
   async deleteDocument(customerId: string) {
     const customer = await prisma.customer.findUnique({
       where: { id: customerId },
@@ -64,7 +91,15 @@ export class CustomerService {
     }
 
     if (customer.documentPath) {
-      deleteFile(customer.documentPath);
+      try {
+        const fullPath = path.join(process.cwd(), customer.documentPath);
+        if (fs.existsSync(fullPath)) {
+          fs.unlinkSync(fullPath);
+          logger.info(`Document file deleted: ${fullPath}`);
+        }
+      } catch (error) {
+        logger.error('Failed to delete document file:', error);
+      }
     }
 
     await prisma.customer.update({
@@ -80,6 +115,9 @@ export class CustomerService {
     return { message: 'Document deleted successfully' };
   }
 
+  /**
+   * Get customer document (returns file path for local serving)
+   */
   async getDocument(customerId: string) {
     const customer = await prisma.customer.findUnique({
       where: { id: customerId },
@@ -90,18 +128,19 @@ export class CustomerService {
       throw new AppError(404, 'Document not found');
     }
 
-    if (!fs.existsSync(customer.documentPath)) {
-      throw new AppError(404, 'Document file not found');
+    const fullPath = path.join(process.cwd(), customer.documentPath);
+
+    if (!fs.existsSync(fullPath)) {
+      throw new AppError(404, 'Document file not found on server');
     }
 
     return {
-      path: customer.documentPath,
+      path: fullPath,
       name: customer.documentName,
+      relativePath: customer.documentPath
     };
   }
-  /**
-   * List customers with filters
-   */
+
   async listCustomers(filters: ListCustomersInput) {
     const page = filters.page || 1;
     const limit = Math.min(filters.limit || 20, 100);
@@ -148,9 +187,6 @@ export class CustomerService {
     };
   }
 
-  /**
-   * Get customer by ID
-   */
   async getCustomer(customerId: string) {
     const customer = await prisma.customer.findUnique({
       where: { id: customerId },
@@ -178,9 +214,6 @@ export class CustomerService {
     return customer;
   }
 
-  /**
-   * Update customer
-   */
   async updateCustomer(customerId: string, data: UpdateCustomerInput) {
     const customer = await prisma.customer.update({
       where: { id: customerId },
@@ -191,17 +224,12 @@ export class CustomerService {
     return customer;
   }
 
-  /**
-   * Delete customer (soft delete)
-   */
   async deleteCustomer(customerId: string) {
-    // Check if customer has orders
     const orderCount = await prisma.order.count({
       where: { customerId },
     });
 
     if (orderCount > 0) {
-      // Soft delete - mark as inactive
       await prisma.customer.update({
         where: { id: customerId },
         data: { status: 'inactive' },
@@ -211,7 +239,23 @@ export class CustomerService {
       return { message: 'Customer deactivated (has existing orders)' };
     }
 
-    // Hard delete if no orders
+    // Delete associated document if exists
+    const customer = await prisma.customer.findUnique({
+      where: { id: customerId },
+      select: { documentPath: true }
+    });
+
+    if (customer?.documentPath) {
+      try {
+        const fullPath = path.join(process.cwd(), customer.documentPath);
+        if (fs.existsSync(fullPath)) {
+          fs.unlinkSync(fullPath);
+        }
+      } catch (error) {
+        logger.warn('Failed to delete customer document:', error);
+      }
+    }
+
     await prisma.customer.delete({
       where: { id: customerId },
     });
@@ -220,9 +264,6 @@ export class CustomerService {
     return { message: 'Customer deleted successfully' };
   }
 
-  /**
-   * Get customer purchase history
-   */
   async getCustomerOrders(customerId: string, page = 1, limit = 20) {
     const skip = (page - 1) * limit;
 
@@ -257,9 +298,6 @@ export class CustomerService {
     };
   }
 
-  /**
-   * Get customer statistics
-   */
   async getCustomerStats() {
     const [total, active, inactive, withOrders] = await Promise.all([
       prisma.customer.count(),

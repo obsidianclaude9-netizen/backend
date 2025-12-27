@@ -33,14 +33,12 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
-// src/modules/monitoring/monitoring.routes.ts
 const express_1 = require("express");
 const monitoringController = __importStar(require("./monitoring.controller"));
 const auth_1 = require("../../middleware/auth");
 const router = (0, express_1.Router)();
-// Public health check (no auth)
 router.get('/health', monitoringController.getHealthCheck);
-// Detailed metrics (admin only)
 router.get('/metrics', auth_1.authenticateJWT, auth_1.requireSuperAdmin, monitoringController.getMetrics);
+router.get('/websocket', auth_1.authenticateJWT, auth_1.requireSuperAdmin, monitoringController.getWebSocketStats);
 exports.default = router;
 //# sourceMappingURL=monitoring.routes.js.map
