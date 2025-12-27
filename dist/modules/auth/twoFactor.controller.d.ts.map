@@ -1,0 +1,1 @@
+{"version":3,"file":"twoFactor.controller.d.ts","sourceRoot":"","sources":["../../../src/modules/auth/twoFactor.controller.ts"],"names":[],"mappings":"AAAA,OAAO,EAAE,OAAO,EAAE,QAAQ,EAAE,MAAM,SAAS,CAAC;AAM5C,eAAO,MAAM,cAAc,6EAGzB,CAAC;AAEH,eAAO,MAAM,eAAe,6EAG1B,CAAC;AAEH,eAAO,MAAM,WAAW,6EAOtB,CAAC;AAEH,eAAO,MAAM,gBAAgB,6EAG3B,CAAC;AAEH,eAAO,MAAM,qBAAqB,6EAGhC,CAAC"}

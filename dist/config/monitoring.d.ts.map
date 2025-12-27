@@ -1,0 +1,1 @@
+{"version":3,"file":"monitoring.d.ts","sourceRoot":"","sources":["../../src/config/monitoring.ts"],"names":[],"mappings":"AAEA,OAAO,EAAE,OAAO,EAAE,cAAc,EAAE,mBAAmB,EAAE,MAAM,SAAS,CAAC;AAGvE,eAAO,MAAM,gBAAgB,GAAI,KAAK,OAAO,SAgC5C,CAAC;AAEF,eAAO,MAAM,mBAAmB,QAAO;IACrC,cAAc,EAAE,cAAc,CAAC;IAC/B,cAAc,EAAE,cAAc,CAAC;IAC/B,YAAY,EAAE,mBAAmB,CAAC;CAOnC,CAAC"}

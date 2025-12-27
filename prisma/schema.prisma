@@ -1,0 +1,420 @@
+// backend/prisma/schema.prisma 
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  SUPER_ADMIN
+  ADMIN
+  STAFF
+}
+
+enum OrderStatus {
+  PENDING
+  COMPLETED
+  CANCELLED
+}
+
+enum TicketStatus {
+  ACTIVE
+  SCANNED
+  CANCELLED
+  EXPIRED
+}
+
+enum CampaignStatus {
+  DRAFT
+  SENT
+  SCHEDULED
+}
+
+enum NotificationType {
+  INFO
+  SUCCESS
+  WARNING
+  ERROR
+}
+
+model User {
+  id            String   @id @default(cuid())
+  email         String   @unique
+  password      String
+  firstName     String
+  lastName      String
+  phone         String?
+  role          UserRole @default(ADMIN)
+  isActive      Boolean  @default(true)
+  lastLoginAt   DateTime?
+  
+  twoFactorEnabled      Boolean @default(false)
+  twoFactorSecret       String?
+  twoFactorBackupCodes  String?
+  
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  
+  auditLogs     AuditLog[]
+  notifications Notification[]
+  loginActivities LoginActivity[]
+  activeSessions  ActiveSession[]
+  
+  @@index([email])
+  @@index([role, isActive])
+  @@map("users")
+}
+
+model Customer {
+  id            String   @id @default(cuid())
+  firstName     String
+  lastName      String
+  email         String   @unique
+  phone         String
+  whatsapp      String?
+  location      String
+  notes         String?
+  status        String   @default("active")
+  totalOrders   Int      @default(0)
+  totalSpent    Decimal  @default(0) @db.Decimal(10, 2)
+  lastPurchase  DateTime?
+  
+  documentPath  String?
+  documentName  String?
+  
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  
+  orders        Order[]
+  
+  @@index([email])
+  @@index([status])
+  @@index([createdAt, status])
+  @@index([totalSpent])
+  @@index([lastPurchase])
+  @@map("customers")
+}
+
+model Order {
+  id            String      @id @default(cuid())
+  orderNumber   String      @unique
+  customerId    String
+  quantity      Int
+  amount        Decimal     @db.Decimal(10, 2)
+  status        OrderStatus @default(PENDING)
+  purchaseDate  DateTime    @default(now())
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+  
+  customer      Customer    @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  tickets       Ticket[]
+  
+  @@index([customerId])
+  @@index([orderNumber])
+  @@index([status])
+  @@index([purchaseDate, status])
+  @@index([customerId, status])
+  @@index([createdAt, status])
+  @@map("orders")
+}
+
+model Ticket {
+  id            String       @id @default(cuid())
+  ticketCode    String       @unique
+  orderId       String
+  gameSession   String
+  status        TicketStatus @default(ACTIVE)
+  validUntil    DateTime
+  scanCount     Int          @default(0)
+  maxScans      Int          @default(2)
+  firstScanAt   DateTime?
+  lastScanAt    DateTime?
+  scanWindow    Int          @default(14)
+  qrCodePath    String?
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+  
+  order         Order        @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  scanHistory   TicketScan[]
+  
+  @@index([ticketCode])
+  @@index([status])
+  @@index([orderId])
+  @@index([createdAt, status])
+  @@index([gameSession, status])
+  @@index([validUntil, status])
+  @@index([firstScanAt])
+  @@map("tickets")
+}
+
+model TicketScan {
+  id            String   @id @default(cuid())
+  ticketId      String
+  scannedAt     DateTime @default(now())
+  scannedBy     String
+  location      String?
+  allowed       Boolean
+  reason        String
+  
+  ticket        Ticket   @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  
+  @@index([ticketId])
+  @@index([scannedAt])
+  @@index([scannedAt, allowed])
+  @@index([ticketId, scannedAt])
+  @@map("ticket_scans")
+}
+
+model TicketSettings {
+  id                Int      @id @default(1)
+  maxScanCount      Int      @default(2)
+  scanWindowDays    Int      @default(14)
+  validityDays      Int      @default(30)
+  basePrice         Decimal  @db.Decimal(10, 2) @default(2500)
+  allowRefunds      Boolean  @default(true)
+  allowTransfers    Boolean  @default(true)
+  enableCategories  Boolean  @default(false)
+  updatedAt         DateTime @updatedAt
+  
+  @@map("ticket_settings")
+}
+
+model Subscriber {
+  id            String   @id @default(cuid())
+  email         String   @unique
+  name          String
+  source        String   @default("manual")
+  status        String   @default("active")
+  subscribedAt  DateTime @default(now())
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  
+  tracking      CampaignTracking[]
+  
+  @@index([email])
+  @@index([status])
+  @@index([subscribedAt])
+  @@map("subscribers")
+}
+
+model EmailTemplate {
+  id            String   @id @default(cuid())
+  name          String
+  subject       String
+  body          String   @db.Text
+  category      String
+  status        String   @default("draft")
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  
+  campaigns     Campaign[]
+  
+  @@index([category, status])
+  @@map("email_templates")
+}
+
+model Campaign {
+  id            String         @id @default(cuid())
+  subject       String
+  body          String         @db.Text
+  templateId    String?
+  sentTo        Int            @default(0)
+  openedCount   Int            @default(0)
+  clickedCount  Int            @default(0)
+  status        CampaignStatus @default(DRAFT)
+  sentAt        DateTime?
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+  
+  template      EmailTemplate? @relation(fields: [templateId], references: [id], onDelete: SetNull)
+  tracking      CampaignTracking[]
+  
+  @@index([status])
+  @@index([sentAt])
+  @@map("campaigns")
+}
+
+// NEW: Campaign Tracking
+model CampaignTracking {
+  id            String   @id @default(cuid())
+  campaignId    String
+  subscriberId  String
+  opened        Boolean  @default(false)
+  openedAt      DateTime?
+  clicked       Boolean  @default(false)
+  clickedAt     DateTime?
+  converted     Boolean  @default(false)
+  convertedAt   DateTime?
+  createdAt     DateTime @default(now())
+  
+  campaign      Campaign   @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  subscriber    Subscriber @relation(fields: [subscriberId], references: [id], onDelete: Cascade)
+  
+  @@unique([campaignId, subscriberId])
+  @@index([campaignId])
+  @@index([subscriberId])
+  @@index([opened, clicked, converted])
+  @@map("campaign_tracking")
+}
+
+model Notification {
+  id            String           @id @default(cuid())
+  userId        String
+  title         String
+  message       String
+  type          NotificationType @default(INFO)
+  read          Boolean          @default(false)
+  actionUrl     String?
+  createdAt     DateTime         @default(now())
+  
+  user          User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  @@index([userId])
+  @@index([read])
+  @@index([createdAt])
+  @@map("notifications")
+}
+
+model AuditLog {
+  id            String   @id @default(cuid())
+  userId        String
+  action        String
+  entity        String
+  entityId      String?
+  details       Json?
+  ipAddress     String?
+  userAgent     String?
+  createdAt     DateTime @default(now())
+  
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  @@index([userId])
+  @@index([entity])
+  @@index([createdAt])
+  @@index([action, entity])
+  @@map("audit_logs")
+}
+
+model LoginActivity {
+  id          String   @id @default(cuid())
+  userId      String
+  ipAddress   String
+  userAgent   String
+  device      String?
+  location    String?
+  status      String   @default("success")
+  timestamp   DateTime @default(now())
+  
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  @@index([userId])
+  @@index([timestamp])
+  @@index([status])
+  @@map("login_activities")
+}
+
+model ActiveSession {
+  id          String   @id @default(cuid())
+  userId      String
+  token       String   @unique
+  ipAddress   String
+  userAgent   String
+  device      String?
+  location    String?
+  lastActive  DateTime @default(now())
+  expiresAt   DateTime
+  createdAt   DateTime @default(now())
+  
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  @@index([userId])
+  @@index([token])
+  @@index([expiresAt])
+  @@map("active_sessions")
+}
+
+model SystemSettings {
+  id                Int      @id @default(1)
+  
+  businessName      String   @default("JGPNR Paintball")
+  businessEmail     String
+  businessPhone     String
+  businessAddress   String?
+  businessLogo      String?
+  
+  smtpHost          String
+  smtpPort          Int      @default(587)
+  smtpUser          String
+  smtpPassword      String
+  senderName        String
+  senderEmail       String
+  
+  currency          String   @default("NGN")
+  currencySymbol    String   @default("₦")
+  timezone          String   @default("Africa/Lagos")
+  dateFormat        String   @default("DD/MM/YYYY")
+  timeFormat        String   @default("12")
+
+  operatingDays     Json     @default("[\"monday\",\"tuesday\",\"wednesday\",\"thursday\",\"friday\",\"saturday\",\"sunday\"]")
+  openingTime       String   @default("08:00")
+  closingTime       String   @default("18:00")
+  isOpen24Hours     Boolean  @default(false)
+
+  emailFooter       String   @default("© JGPNR Paintball. All rights reserved.")
+  emailFooterEnabled Boolean @default(true)
+  
+  paystackEnabled   Boolean  @default(true)
+  paystackPublicKey String?
+  paystackSecretKey String?
+  
+  flutterwaveEnabled   Boolean @default(false)
+  flutterwavePublicKey String?
+  flutterwaveSecretKey String?
+  flutterwaveEncKey    String?
+  
+  autoConfirmPayment   Boolean @default(false)
+  allowPartialPayment  Boolean @default(false)
+  paymentTimeout       Int     @default(30)
+  sendPaymentReceipt   Boolean @default(true)
+  
+  emailNotifications   Boolean @default(true)
+  smsNotifications     Boolean @default(false)
+  pushNotifications    Boolean @default(true)
+  notifyOnNewOrder     Boolean @default(true)
+  notifyOnPayment      Boolean @default(true)
+  notifyLowInventory   Boolean @default(false)
+  
+  updatedAt         DateTime @updatedAt
+  
+  @@map("system_settings")
+}
+
+// NEW: Analytics Cache
+model AnalyticsCache {
+  id          String   @id @default(cuid())
+  cacheKey    String   @unique
+  data        Json
+  expiresAt   DateTime
+  createdAt   DateTime @default(now())
+  
+  @@index([cacheKey, expiresAt])
+  @@index([expiresAt])
+  @@map("analytics_cache")
+}
+
+// NEW: Revenue Targets
+model RevenueTarget {
+  id          String   @id @default(cuid())
+  month       String   // YYYY-MM
+  target      Decimal  @db.Decimal(10, 2)
+  actual      Decimal  @db.Decimal(10, 2) @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  @@unique([month])
+  @@index([month])
+  @@map("revenue_targets")
+}
