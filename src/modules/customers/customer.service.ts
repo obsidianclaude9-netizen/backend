@@ -375,38 +375,40 @@ export class CustomerService {
  * Delete customer document
  */
   async deleteDocument(customerId: string) {
-  const customer = await prisma.customer.findUnique({
-    where: { id: customerId },
-  });
+    const customer = await prisma.customer.findUnique({
+      where: { id: customerId },
+    });
 
-  if (!customer) {
-    throw new AppError(404, 'Customer not found');
-  }
+    if (!customer) {
+      throw new AppError(404, 'Customer not found');
+    }
 
-  if (!customer.documentPath) {
-    throw new AppError(404, 'No document found for this customer');
-  }
+    if (!customer.documentPath) {
+      throw new AppError(404, 'No document found for this customer');
+    }
 
-  // Delete file from filesystem
-  try {
-    const docPath = path.join(process.cwd(), customer.documentPath);
-    await fs.unlink(docPath);
-  } catch (error) {
-    logger.error(`Failed to delete document file:`, error);
-    throw new AppError(500, 'Failed to delete document file');
-  }
+    // Delete file from filesystem
+    try {
+      const docPath = path.join(process.cwd(), customer.documentPath);
+      await fs.unlink(docPath);
+    } catch (error) {
+      logger.error(`Failed to delete document file:`, error);
+      throw new AppError(500, 'Failed to delete document file');
+    }
 
-  // Update customer record
-  const updated = await prisma.customer.update({
-    where: { id: customerId },
-    data: { 
-      documentPath: null,
-      documentName: null,
-    },
-  });
+    // Update customer record
+    const updated = await prisma.customer.update({
+      where: { id: customerId },
+      data: { 
+        documentPath: null,
+        documentName: null,
+      },
+    });
 
-  logger.info(`Document deleted for customer: ${customer.email}`);
-  return { message: 'Document deleted successfully' };
+    logger.info(`Document deleted for customer: ${customer.email}`);
+    
+    
+    return updated;
   }
 
   /**

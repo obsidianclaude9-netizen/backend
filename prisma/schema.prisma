@@ -80,9 +80,9 @@ model Customer {
   totalOrders   Int      @default(0)
   totalSpent    Decimal  @default(0) @db.Decimal(10, 2)
   lastPurchase  DateTime?
-  
   documentPath  String?
   documentName  String?
+  avatar        String?   
   
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
@@ -105,10 +105,9 @@ model Order {
   amount        Decimal     @db.Decimal(10, 2)
   status        OrderStatus @default(PENDING)
   purchaseDate  DateTime    @default(now())
-
   paymentReference String?
   paymentChannel   String?
-
+  paidAt        DateTime?  
   createdAt     DateTime    @default(now())
   updatedAt     DateTime    @updatedAt
   
@@ -121,6 +120,7 @@ model Order {
   @@index([purchaseDate, status])
   @@index([customerId, status])
   @@index([createdAt, status])
+  @@index([paidAt])  
   @@map("orders")
 }
 
@@ -150,6 +150,7 @@ model Ticket {
   @@index([gameSession, status])
   @@index([validUntil, status])
   @@index([firstScanAt])
+  @@index([scanCount, maxScans]) 
   @@map("tickets")
 }
 
@@ -168,6 +169,7 @@ model TicketScan {
   @@index([scannedAt])
   @@index([scannedAt, allowed])
   @@index([ticketId, scannedAt])
+  @@index([scannedBy])    
   @@map("ticket_scans")
 }
 

@@ -268,16 +268,15 @@ export class PaymentService {
     }
 
     await prisma.$transaction(async (tx) => {
-      // Fix: Remove paidAt field as it doesn't exist in schema
-      // Use updatedAt to track when payment was completed
-      await tx.order.update({
-        where: { id: orderId },
-        data: {
-          status: 'COMPLETED',
-          paymentReference: data.reference,
-          paymentChannel: data.channel,
-          updatedAt: new Date(), // Track completion time
-        },
+        await tx.order.update({
+          where: { id: orderId },
+          data: {
+            status: 'COMPLETED',
+            paymentReference: data.reference,
+            paymentChannel: data.channel,
+            paidAt: new Date(), 
+          },
+
       });
 
       await tx.customer.update({
@@ -375,24 +374,7 @@ export class PaymentService {
         where: {
           status: { in: ['COMPLETED', 'PENDING'] },
         },
-        skip,
-        take: Math.min(limit, 100),
-        orderBy: { updatedAt: 'desc' }, // Fix: Use updatedAt instead of paidAt
-        include: {
-          customer: {
-            select: {
-              id: true,
-              firstName: true,
-              lastName: true,
-              email: true,
-            },
-          },
-        },
-      }),
-      prisma.order.count({
-        where: {
-          status: { in: ['COMPLETED', 'PENDING'] },
-        },
+        orderBy: { paidAt: 'desc' },
       }),
     ]);
 

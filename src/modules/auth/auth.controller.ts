@@ -26,10 +26,9 @@ export const login = asyncHandler(async (req: Request, res: Response) => {
 
 export const refreshToken = asyncHandler(async (req: Request, res: Response) => {
   const result = await authService.refreshToken(req.body.refreshToken);
-  
   logger.info('Token refreshed', {
-    userId: result.user.id,
     ip: req.ip,
+    timestamp: new Date().toISOString(),
   });
   
   res.json(result);
