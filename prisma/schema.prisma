@@ -1,4 +1,3 @@
-// backend/prisma/schema.prisma 
 generator client {
   provider = "prisma-client-js"
 }
@@ -106,6 +105,10 @@ model Order {
   amount        Decimal     @db.Decimal(10, 2)
   status        OrderStatus @default(PENDING)
   purchaseDate  DateTime    @default(now())
+
+  paymentReference String?
+  paymentChannel   String?
+
   createdAt     DateTime    @default(now())
   updatedAt     DateTime    @updatedAt
   

@@ -1,207 +1,221 @@
+// src/config/websocket.ts
 import { Server as HTTPServer } from 'http';
-import { Server as SocketIOServer } from 'socket.io';
-import { createAdapter } from '@socket.io/redis-adapter';
-import { createClient } from 'redis';
+import { Server, Socket } from 'socket.io';
 import jwt from 'jsonwebtoken';
 import { logger } from '../utils/logger';
-import { JWTPayload } from '../middleware/auth';
+import prisma from './database';
 
-let io: SocketIOServer;
-let pubClient: ReturnType<typeof createClient>;
-let subClient: ReturnType<typeof createClient>;
+let io: Server;
 
-export const initializeWebSocket = async (httpServer: HTTPServer) => {
-  pubClient = createClient({
-    url: process.env.REDIS_URL || `redis://${process.env.REDIS_HOST}:${process.env.REDIS_PORT}`,
-    password: process.env.REDIS_PASSWORD
-  });
+interface SocketUser {
+  id: string;
+  email: string;
+  role: string;
+}
 
-  subClient = pubClient.duplicate();
+interface AuthSocket extends Socket {
+  user?: SocketUser;
+}
 
-  pubClient.on('error', (err: Error) => logger.error('Redis Pub Client Error:', err));
-  subClient.on('error', (err: Error) => logger.error('Redis Sub Client Error:', err));
-
-  pubClient.on('connect', () => logger.info('Redis Pub Client connected'));
-  subClient.on('connect', () => logger.info('Redis Sub Client connected'));
-
-  await Promise.all([
-    pubClient.connect(),
-    subClient.connect()
-  ]);
-
-  io = new SocketIOServer(httpServer, {
+export const initializeWebSocket = async (server: HTTPServer): Promise<void> => {
+  io = new Server(server, {
     cors: {
-      origin: process.env.CORS_ORIGIN?.split(',') || 'http://localhost:3000',
+      origin: process.env.FRONTEND_URL || 'http://localhost:3000',
       credentials: true,
     },
-    adapter: createAdapter(pubClient, subClient)
+    pingTimeout: 60000,
+    pingInterval: 25000,
   });
 
-  io.use((socket, next) => {
-    const token = socket.handshake.auth.token;
-
-    if (!token) {
-      return next(new Error('Authentication token required'));
-    }
-
+  io.use(async (socket: AuthSocket, next) => {
     try {
-      const decoded = jwt.verify(token, process.env.JWT_SECRET!) as JWTPayload;
-      socket.data.user = decoded;
+      const token = socket.handshake.auth.token || socket.handshake.headers.authorization?.split(' ')[1];
+
+      if (!token) {
+        return next(new Error('Authentication token required'));
+      }
+
+      const jwtSecret = process.env.JWT_SECRET;
+      if (!jwtSecret) {
+        logger.error('JWT_SECRET not configured');
+        return next(new Error('Server configuration error'));
+      }
+
+      const decoded = jwt.verify(token, jwtSecret) as { userId: string };
+
+      const user = await prisma.user.findUnique({
+        where: { id: decoded.userId },
+        select: {
+          id: true,
+          email: true,
+          role: true,
+        },
+      });
+
+      if (!user) {
+        return next(new Error('User not found'));
+      }
+
+      socket.user = user;
       next();
-    } catch (error) {
-      next(new Error('Invalid token'));
+    } catch (error: any) {
+      logger.error('WebSocket authentication error:', error);
+      next(new Error('Authentication failed'));
     }
   });
 
-  io.on('connection', (socket) => {
-    const userId = socket.data.user.userId;
-    const userRole = socket.data.user.role;
+  io.on('connection', (socket: AuthSocket) => {
+    logger.info(`Client connected: ${socket.id} (User: ${socket.user?.email})`);
 
-    logger.info(`WebSocket connected: ${userId} (${socket.id})`);
-
-    socket.join(`user:${userId}`);
-    socket.join(`role:${userRole}`);
-
-    if (userRole === 'SUPER_ADMIN' || userRole === 'ADMIN') {
-      socket.join('admins');
+    if (socket.user) {
+      socket.join(`user:${socket.user.id}`);
+      
+      if (socket.user.role === 'ADMIN' || socket.user.role === 'SUPER_ADMIN') {
+        socket.join('admins');
+      }
     }
 
-    if (userRole === 'STAFF' || userRole === 'ADMIN' || userRole === 'SUPER_ADMIN') {
-      socket.join('staff');
-    }
+    socket.on('scan:ticket', async (data) => {
+      try {
+        if (!socket.user) {
+          socket.emit('error', { message: 'Unauthorized' });
+          return;
+        }
 
-    socket.on('subscribe:order', (orderId: string) => {
-      socket.join(`order:${orderId}`);
-      logger.debug(`User ${userId} subscribed to order ${orderId}`);
+        logger.info(`Ticket scan event from ${socket.user.email}:`, data);
+        
+        io.to('admins').emit('scan:new', {
+          ticketCode: data.ticketCode,
+          scannedBy: socket.user.email,
+          timestamp: new Date(),
+        });
+      } catch (error: any) {
+        logger.error('Ticket scan event error:', error);
+        socket.emit('error', { message: 'Failed to process scan event' });
+      }
     });
 
-    socket.on('subscribe:ticket', (ticketId: string) => {
-      socket.join(`ticket:${ticketId}`);
-      logger.debug(`User ${userId} subscribed to ticket ${ticketId}`);
+    socket.on('order:update', async (data) => {
+      try {
+        if (!socket.user) {
+          socket.emit('error', { message: 'Unauthorized' });
+          return;
+        }
+
+        logger.info(`Order update event from ${socket.user.email}:`, data);
+        
+        if (data.customerId) {
+          io.to(`user:${data.customerId}`).emit('order:updated', data);
+        }
+        io.to('admins').emit('order:updated', data);
+      } catch (error: any) {
+        logger.error('Order update event error:', error);
+        socket.emit('error', { message: 'Failed to process order update' });
+      }
     });
 
-    socket.on('unsubscribe:order', (orderId: string) => {
-      socket.leave(`order:${orderId}`);
-    });
+    socket.on('analytics:subscribe', async () => {
+      try {
+        if (!socket.user) {
+          socket.emit('error', { message: 'Unauthorized' });
+          return;
+        }
 
-    socket.on('unsubscribe:ticket', (ticketId: string) => {
-      socket.leave(`ticket:${ticketId}`);
-    });
+        if (socket.user.role !== 'ADMIN' && socket.user.role !== 'SUPER_ADMIN') {
+          socket.emit('error', { message: 'Insufficient permissions' });
+          return;
+        }
 
-    socket.on('ping', () => {
-      socket.emit('pong', { timestamp: Date.now() });
+        socket.join('analytics');
+        logger.info(`User ${socket.user.email} subscribed to analytics`);
+      } catch (error: any) {
+        logger.error('Analytics subscribe error:', error);
+        socket.emit('error', { message: 'Failed to subscribe to analytics' });
+      }
     });
 
     socket.on('disconnect', (reason) => {
-      logger.info(`WebSocket disconnected: ${userId} (${socket.id}) - Reason: ${reason}`);
+      logger.info(`Client disconnected: ${socket.id} (Reason: ${reason})`);
     });
 
     socket.on('error', (error) => {
-      logger.error(`WebSocket error for ${userId}:`, error);
+      logger.error('Socket error:', error);
     });
   });
 
-  logger.info('WebSocket server initialized with Redis adapter');
-  return io;
+  logger.info('WebSocket server initialized');
 };
 
-export const getIO = (): SocketIOServer => {
+export const getIO = (): Server => {
   if (!io) {
     throw new Error('WebSocket not initialized');
   }
   return io;
 };
 
-export const emitNotification = (userId: string, notification: any) => {
-  if (io) {
-    io.to(`user:${userId}`).emit('notification', notification);
-    logger.debug(`Notification emitted to user ${userId}`);
+export const emitToUser = (userId: string, event: string, data: any): void => {
+  try {
+    if (!io) {
+      logger.warn('WebSocket not initialized, cannot emit to user');
+      return;
+    }
+    io.to(`user:${userId}`).emit(event, data);
+  } catch (error) {
+    logger.error('Error emitting to user:', error);
   }
 };
 
-export const emitToAdmins = (event: string, data: any) => {
-  if (io) {
+export const emitToAdmins = (event: string, data: any): void => {
+  try {
+    if (!io) {
+      logger.warn('WebSocket not initialized, cannot emit to admins');
+      return;
+    }
     io.to('admins').emit(event, data);
-    logger.debug(`Event ${event} emitted to admins`);
+  } catch (error) {
+    logger.error('Error emitting to admins:', error);
   }
 };
 
-export const emitToStaff = (event: string, data: any) => {
-  if (io) {
-    io.to('staff').emit(event, data);
-    logger.debug(`Event ${event} emitted to staff`);
-  }
-};
-
-export const emitOrderUpdate = (orderId: string, data: any) => {
-  if (io) {
-    io.to(`order:${orderId}`).emit('order:update', data);
-    logger.debug(`Order update emitted for ${orderId}`);
-  }
-};
-
-export const emitTicketUpdate = (ticketId: string, data: any) => {
-  if (io) {
-    io.to(`ticket:${ticketId}`).emit('ticket:update', data);
-    logger.debug(`Ticket update emitted for ${ticketId}`);
-  }
-};
-
-export const emitScanEvent = (scanData: any) => {
-  if (io) {
-    io.to('staff').emit('scan:new', scanData);
-    logger.debug('Scan event emitted to staff');
-  }
-};
-
-export const emitAnalyticsUpdate = (metric: string, data: any) => {
-  if (io) {
-    io.to('admins').emit('analytics:update', { metric, data, timestamp: Date.now() });
-    logger.debug(`Analytics update emitted: ${metric}`);
-  }
-};
-
-export const broadcastToAll = (event: string, data: any) => {
-  if (io) {
+export const emitToAll = (event: string, data: any): void => {
+  try {
+    if (!io) {
+      logger.warn('WebSocket not initialized, cannot emit to all');
+      return;
+    }
     io.emit(event, data);
-    logger.debug(`Broadcast event: ${event}`);
+  } catch (error) {
+    logger.error('Error emitting to all:', error);
   }
 };
 
-export const getConnectionStats = async () => {
-  if (!io) return { connected: 0, rooms: [] };
+export const emitNotification = (userId: string, notification: any): void => {
+  emitToUser(userId, 'notification:new', notification);
+};
+
+export const getConnectionStats = async (): Promise<{
+  totalConnections: number;
+  adminConnections: number;
+  rooms: string[];
+}> => {
+  if (!io) {
+    return { totalConnections: 0, adminConnections: 0, rooms: [] };
+  }
 
   const sockets = await io.fetchSockets();
-  const rooms = new Set<string>();
-
-  sockets.forEach(socket => {
-    socket.rooms.forEach(room => {
-      if (room !== socket.id) {
-        rooms.add(room);
-      }
-    });
-  });
+  const adminSockets = sockets.filter(s => s.rooms.has('admins'));
+  const rooms = Array.from(io.sockets.adapter.rooms.keys());
 
   return {
-    connected: sockets.length,
-    rooms: Array.from(rooms),
-    serverCount: io.engine.clientsCount
+    totalConnections: sockets.length,
+    adminConnections: adminSockets.length,
+    rooms,
   };
 };
 
-export const closeWebSocket = async () => {
+export const closeWebSocket = async (): Promise<void> => {
   if (io) {
     io.close();
     logger.info('WebSocket server closed');
-  }
-
-  if (pubClient) {
-    await pubClient.quit();
-    logger.info('Redis Pub client disconnected');
-  }
-
-  if (subClient) {
-    await subClient.quit();
-    logger.info('Redis Sub client disconnected');
   }
 };
