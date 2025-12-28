@@ -1,24 +1,45 @@
 // src/modules/auth/auth.service.ts
+import jwt, { SignOptions } from 'jsonwebtoken';
+import { accountLockout } from '../../middleware/rateLimit';
 import bcrypt from 'bcrypt';
 import prisma from '../../config/database';
 import { AppError } from '../../middleware/errorHandler';
 import { LoginInput, CreateUserInput, UpdateUserInput, ChangePasswordInput } from './auth.schema';
-import { JWTPayload } from '../../middleware/auth';
 import { Prisma, UserRole } from '@prisma/client';
 import { logger } from '../../utils/logger';
-import jwt, { SignOptions } from 'jsonwebtoken';
 import * as speakeasy from 'speakeasy';
 import * as QRCode from 'qrcode';
 import crypto from 'crypto';
 
-const SALT_ROUNDS = 12;
+export interface JWTPayload {
+  userId: string;
+  email: string;
+  role: UserRole;
+  tokenVersion?: number;
+  iat?: number;
+  exp?: number;
+}
+const getSaltRounds = (): number => {
+  const envRounds = parseInt(process.env.BCRYPT_ROUNDS || '14');
+  if (envRounds < 12 || envRounds > 16) {
+    logger.warn(`Invalid BCRYPT_ROUNDS (${envRounds}), using default 14`);
+    return 14;
+  }
+  return envRounds;
+};
+
+const SALT_ROUNDS = getSaltRounds();
+
+
 interface ListUsersInput {
   page: number;
   limit: number;
   search?: string;
+  tokenVersion: number;
   role?: string;
   status?: string;
 }
+
 export interface LoginResponse {
   user: {
     id: string;
@@ -32,19 +53,31 @@ export interface LoginResponse {
 }
 export class AuthService {
   async login(data: LoginInput): Promise<LoginResponse> {
+    const lockoutStatus = await accountLockout(data.email, false);
+  
+    if (lockoutStatus.locked) {
+      logger.warn('Login attempted on locked account', { email: data.email });
+      throw new AppError(429, `Account temporarily locked. Try again after ${lockoutStatus.unlockAt?.toLocaleTimeString()}`);
+    }
+
     const user = await prisma.user.findUnique({
       where: { email: data.email },
     });
 
-    if (!user || !user.isActive) {
+   if (!user || !user.isActive) {
+      await accountLockout(data.email, false);
+      throw new AppError(401, 'Invalid credentials');
+   }
+
+    const isValidPassword = await bcrypt.compare(data.password, user.password);
+  
+    if (!isValidPassword) {
+      
+      await accountLockout(data.email, false);
       throw new AppError(401, 'Invalid credentials');
     }
 
-    const isValidPassword = await bcrypt.compare(data.password, user.password);
-    
-    if (!isValidPassword) {
-      throw new AppError(401, 'Invalid credentials');
-    }
+    await accountLockout(data.email, true);
 
     await prisma.user.update({
       where: { id: user.id },
@@ -103,6 +136,7 @@ export class AuthService {
         userId: user.id,
         email: user.email,
         role: user.role,
+        tokenVersion: user.tokenVersion
       };
 
       const accessToken = jwt.sign(
@@ -141,8 +175,9 @@ export class AuthService {
   }
 
   async createUser(data: CreateUserInput) {
+    
     const hashedPassword = await bcrypt.hash(data.password, SALT_ROUNDS);
-
+    
     const user = await prisma.user.create({
       data: {
         ...data,
@@ -208,7 +243,10 @@ export class AuthService {
 
     await prisma.user.update({
       where: { id: userId },
-      data: { password: hashedPassword },
+      data: { 
+        password: hashedPassword,
+        tokenVersion: { increment: 1 }, // ✅ Invalidate all tokens
+      },
     });
 
     logger.info(`Password changed for user: ${user.email}`);

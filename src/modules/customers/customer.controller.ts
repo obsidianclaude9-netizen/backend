@@ -1,3 +1,4 @@
+//src/modules/customers/customer.controller.ts
 import { Request, Response } from 'express';
 import { CustomerService } from './customer.service';
 import { asyncHandler } from '../../middleware/errorHandler';
@@ -6,7 +7,8 @@ import {
   UpdateCustomerInput,
   ListCustomersInput,
 } from './customer.schema';
-
+import { validateUploadedFile } from '../../middleware/upload';
+import { AuditLogger } from '../../utils/audit';
 const customerService = new CustomerService();
 
 export const createCustomer = asyncHandler(async (req: Request, res: Response) => {
@@ -36,7 +38,10 @@ export const updateCustomer = asyncHandler(async (req: Request, res: Response) =
 
 export const deleteCustomer = asyncHandler(async (req: Request, res: Response) => {
   const { id } = req.params;
-  const result = await customerService.deleteCustomer(id);
+  
+  const context = AuditLogger.getContextFromRequest(req);
+  
+  const result = await customerService.deleteCustomer(id, context);
   res.json(result);
 });
 
@@ -61,6 +66,12 @@ export const uploadDocument = asyncHandler(async (req: Request, res: Response) =
     res.status(400).json({ error: 'No file uploaded' });
     return;
   }
+  const isValid = await validateUploadedFile(req.file.path);
+  
+  if (!isValid) {
+    res.status(400).json({ error: 'File validation failed' });
+    return;
+  }
 
   const result = await customerService.uploadDocument(id, req.file);
   res.json(result);
@@ -78,3 +89,4 @@ export const downloadDocument = asyncHandler(async (req: Request, res: Response)
   
   res.download(document.path, document.name || 'document');
 });
+

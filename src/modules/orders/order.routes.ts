@@ -1,7 +1,7 @@
 // src/modules/orders/order.routes.ts
 import { Router } from 'express';
 import * as orderController from './order.controller';
-import { validate } from '../../middleware/validate';
+import { validate } from '../../middleware/validation/validate';
 import { authenticateJWT, requireAdmin } from '../../middleware/auth';
 import { orderLimiter } from '../../middleware/rateLimit';
 import { auditLog } from '../../middleware/audit';

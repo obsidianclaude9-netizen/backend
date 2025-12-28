@@ -2,7 +2,7 @@
 import { Router } from 'express';
 import * as authController from './auth.controller';
 import * as twoFactorController from './twoFactor.controller';
-import { validate } from '../../middleware/validate';
+import { validate } from '../../middleware/validation/validate';
 import { authenticateJWT, requireSuperAdmin } from '../../middleware/auth';
 import { authLimiter } from '../../middleware/rateLimit';
 import { auditLog } from '../../middleware/audit';
@@ -79,6 +79,7 @@ router.post(
   twoFactorController.generateSecret
 );
 
+
 router.post(
   '/2fa/enable',
   twoFactorLimiter,
@@ -88,7 +89,12 @@ router.post(
 
 router.post(
   '/2fa/verify',
-  twoFactorLimiter, // CRITICAL: Prevent brute force
+  rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 5, // 5 attempts per 15 minutes
+    skipSuccessfulRequests: true,
+  }),
+  twoFactorLimiter, 
   twoFactorController.verifyToken
 );
 

@@ -1,7 +1,7 @@
 // src/modules/tickets/ticket.routes.ts
 import { Router } from 'express';
 import * as ticketController from './ticket.controller';
-import { validate } from '../../middleware/validate';
+import { validate } from '../../middleware/validation/validate';
 import { authenticateJWT, requireAdmin, requireStaff } from '../../middleware/auth';
 import { auditLog } from '../../middleware/audit';
 import {

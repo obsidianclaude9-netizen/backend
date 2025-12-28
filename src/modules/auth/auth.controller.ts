@@ -1,20 +1,21 @@
 // src/modules/auth/auth.controller.ts
 import { Request, Response } from 'express';
 import jwt from 'jsonwebtoken';
-import { AuthService, LoginResponse } from './auth.service';
+import { AuthService, JWTPayload} from './auth.service';
 import { asyncHandler } from '../../middleware/errorHandler';
 import { blacklistToken } from '../../middleware/auth';
 import { monitoring } from '../../utils/monitoring.service';
-import { logger } from '../../utils/logger';
-
+import { secureLogger as logger } from '../../utils/secure-logger';
+import prisma from '../../config/database';
 const authService = new AuthService();
 
 export const login = asyncHandler(async (req: Request, res: Response) => {
-  const result: LoginResponse = await authService.login(req.body); // Add explicit type
+  const result = await authService.login(req.body);
   
   logger.info('User logged in', {
     userId: result.user.id,
-    email: result.user.email,
+    email: result.user.email, 
+    role: result.user.role,
     ip: req.ip,
   });
 
@@ -43,45 +44,58 @@ export const getCurrentUser = asyncHandler(async (req: Request, res: Response) =
 });
 
 /**
- * Logout user (FIXED - now actually invalidates token)
+ * Logout 
  */
+// SECURE CODE
 export const logout = asyncHandler(async (req: Request, res: Response) => {
   try {
     const authHeader = req.headers.authorization;
     
-    if (authHeader && authHeader.startsWith('Bearer ')) {
-      const token = authHeader.substring(7);
-      
-      // Decode to get expiration
-      const decoded = jwt.decode(token) as any;
-      
-      if (decoded && decoded.exp) {
-        const expiresIn = decoded.exp - Math.floor(Date.now() / 1000);
-        
-        // Only blacklist if token hasn't expired yet
-        if (expiresIn > 0) {
-          await blacklistToken(token, expiresIn);
-          
-          logger.info('User logged out', {
-            userId: req.user?.userId,
-            email: req.user?.email,
-            ip: req.ip,
-          });
-        }
-      }
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      res.json({ message: 'Logged out successfully' });
+      return;
     }
 
-    // Clear monitoring context
-    monitoring.clearUser();
+    const token = authHeader.substring(7);
     
-    res.json({ 
-      message: 'Logged out successfully',
-      timestamp: new Date().toISOString(),
-    });
+    try {
+      
+      const decoded = jwt.verify(token, process.env.JWT_SECRET!) as JWTPayload;
+      
+  
+      const now = Math.floor(Date.now() / 1000);
+      const expiresIn = decoded.exp! - now;
+      
+      if (expiresIn > 0 && expiresIn < 86400) { 
+        await blacklistToken(token, expiresIn);
+        
+        
+        await prisma.auditLog.create({
+          data: {
+            userId: decoded.userId,
+            action: 'LOGOUT',
+            entity: 'AUTH',
+            ipAddress: req.ip,
+            userAgent: req.get('user-agent'),
+          },
+        });
+        
+        logger.info('User logged out', {
+          userId: decoded.userId,
+          ip: req.ip,
+          tokenExp: new Date(decoded.exp! * 1000).toISOString(),
+        });
+      }
+    } catch (error) {
+      
+      logger.debug('Logout called with invalid token', { ip: req.ip });
+    }
+
+    monitoring.clearUser();
+    res.json({ message: 'Logged out successfully' });
   } catch (error) {
     logger.error('Logout error:', error);
-    // Still return success to user even if blacklisting fails
-    res.json({ message: 'Logged out successfully' });
+    res.json({ message: 'Logged out successfully' }); 
   }
 });
 

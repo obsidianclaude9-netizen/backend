@@ -1,7 +1,7 @@
 // src/modules/subscribers/subscriber.routes.ts
 import { Router } from 'express';
 import * as subscriberController from './subscriber.controller';
-import { validate } from '../../middleware/validate';
+import { validate } from '../../middleware/validation/validate';
 import { authenticateJWT, requireAdmin } from '../../middleware/auth';
 import { exportLimiter } from '../../middleware/rateLimit';
 import { auditLog } from '../../middleware/audit';

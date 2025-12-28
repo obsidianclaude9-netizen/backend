@@ -1,19 +1,22 @@
-// src/app.ts - FIXED VERSION
+// src/app.ts
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import path from 'path';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler';
-import { sanitizeInput } from './middleware/validate';
+import { sanitizeInput } from './middleware/validation/validate';
 import { 
   apiLimiter, 
   authLimiter, 
   paymentLimiter,
   orderLimiter,
+  fileDownloadLimiter,
 } from './middleware/rateLimit';
 import { authenticate , authorizeFileAccess } from './middleware/auth';
 import { logger } from './utils/logger';
 import { initializeSentry, getSentryMiddleware } from './config/monitoring';
+import { csrfProtection, getCsrfToken, csrfErrorHandler } from './middleware/csrf';
+import cookieParser from 'cookie-parser';
 
 // Import routes
 import authRoutes from './modules/auth/auth.routes';
@@ -28,17 +31,29 @@ import settingsRoutes from './modules/settings/settings.routes';
 import advancedSettingsRoutes from './modules/settings/advancedSettings.routes';
 import batchRoutes from './modules/batch/batch.routes';
 import monitoringRoutes from './modules/monitoring/monitoring.routes';
-import paymentRoutes from './modules/payment/payment.routes'; // Add if exists
-
+import paymentRoutes from './modules/payment/payment.routes';
+import auditRoutes from './modules/audit/audit.routes';
 const app = express();
+const API_VERSION = 'v1';
 
-// Initialize Sentry FIRST
+app.use(`/api/${API_VERSION}/auth`, authRoutes);
+app.use(`/api/${API_VERSION}/orders`, authenticate, orderRoutes);
+app.use(`/api/${API_VERSION}/customers`, authenticate, customerRoutes);
+app.use(`/api/${API_VERSION}/tickets`, authenticate, ticketRoutes);
+app.use(`/api/${API_VERSION}/payments`, authenticate, paymentRoutes);
+app.use(`/api/${API_VERSION}/analytics`, authenticate, analyticsRoutes);
+app.use(`/api/${API_VERSION}/users`, authenticate, userRoutes);
+app.use(`/api/${API_VERSION}/settings`, authenticate, settingsRoutes);
+app.use(`/api/${API_VERSION}/audit`, authenticate, auditRoutes); 
 initializeSentry(app);
 const sentryMiddleware = getSentryMiddleware();
 app.use(sentryMiddleware.requestHandler);
 app.use(sentryMiddleware.tracingHandler);
-
-// Health check (should be early for load balancers)
+app.use('/api/payments/webhook', express.json({
+  verify: (req: any, _res, buf) => {
+    req.rawBody = buf.toString('utf8');
+  }
+}));
 app.get('/health', (_req, res) => {
   res.json({
     status: 'ok',
@@ -48,23 +63,12 @@ app.get('/health', (_req, res) => {
   });
 });
 
-// Request logging (but skip health checks)
-app.use((req, _res, next) => {
-  if (req.path !== '/health') {
-    logger.info(`${req.method} ${req.path}`, {
-      ip: req.ip,
-      userAgent: req.get('user-agent'),
-    });
-  }
-  next();
-});
-
-// Security headers
 app.use(helmet({
+ 
   contentSecurityPolicy: {
     directives: {
       defaultSrc: ["'self'"],
-      styleSrc: ["'self'", "'unsafe-inline'"],
+      styleSrc: ["'self'", "'unsafe-inline'"],  
       scriptSrc: ["'self'"],
       imgSrc: ["'self'", 'data:', 'https:'],
       connectSrc: ["'self'"],
@@ -72,22 +76,57 @@ app.use(helmet({
       objectSrc: ["'none'"],
       mediaSrc: ["'self'"],
       frameSrc: ["'none'"],
+      baseUri: ["'self'"],
+      formAction: ["'self'"],
+      frameAncestors: ["'none'"], 
     },
   },
-  crossOriginEmbedderPolicy: false,
-  crossOriginResourcePolicy: { policy: 'cross-origin' },
+  
   hsts: {
-    maxAge: 31536000,
+    maxAge: 31536000, 
     includeSubDomains: true,
     preload: true,
   },
+  
+  noSniff: true,
+  
+  xssFilter: true,
+  
+  referrerPolicy: {
+    policy: 'strict-origin-when-cross-origin',
+  },
+  
+  permittedCrossDomainPolicies: {
+    permittedPolicies: 'none',
+  },
+  
+  hidePoweredBy: true,
+  
+  crossOriginEmbedderPolicy: false,  
+  crossOriginOpenerPolicy: { policy: 'same-origin' },
+  crossOriginResourcePolicy: { policy: 'same-origin' },
 }));
 
-// CORS configuration
+
+app.use((_req, res, next) => {
+
+  res.setHeader('X-Frame-Options', 'DENY');
+  
+  res.setHeader('Permissions-Policy', 
+    'geolocation=(), microphone=(), camera=()'
+  );
+  
+  if (process.env.NODE_ENV === 'production') {
+    res.setHeader('Expect-CT', 
+      'max-age=86400, enforce'
+    );
+  }
+  
+  next();
+});
 const allowedOrigins = process.env.CORS_ORIGIN?.split(',') || ['http://localhost:3000'];
 app.use(cors({
   origin: (origin, callback) => {
-    // Allow requests with no origin (mobile apps, Postman, etc.)
     if (!origin) return callback(null, true);
     
     if (allowedOrigins.includes(origin)) {
@@ -101,37 +140,48 @@ app.use(cors({
   methods: ['GET', 'POST', 'PATCH', 'DELETE', 'PUT', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
   exposedHeaders: ['X-Total-Count', 'X-Page', 'X-Per-Page'],
-  maxAge: 86400, // 24 hours
+  maxAge: 86400, 
 }));
 
-// Body parsing with size limits
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
-
-// Global input sanitization (CRITICAL - before routes)
 app.use(sanitizeInput);
+app.use('/uploads/qrcodes', 
+  authenticate, 
+  authorizeFileAccess, 
+  fileDownloadLimiter, 
+  express.static(path.join(__dirname, '../uploads/qrcodes'))
+);
 
-// Serve static files WITH AUTHENTICATION
-app.use('/uploads/qrcodes', authenticate, express.static(path.join(__dirname, '../uploads/qrcodes')));
+app.use('/uploads/documents', 
+  authenticate, 
+  authorizeFileAccess, 
+  fileDownloadLimiter, 
+  express.static(path.join(__dirname, '../uploads/documents'))
+);
 app.use('/uploads/avatars', authenticate, express.static(path.join(__dirname, '../uploads/avatars')));
-app.use('/uploads/documents', authenticate, express.static(path.join(__dirname, '../uploads/documents')));
 
-// Trust proxy (if behind nginx/load balancer)
+
 if (process.env.TRUST_PROXY === 'true') {
   app.set('trust proxy', 1);
 }
-
-// ==================== ROUTES ====================
-
-// Auth routes (CRITICAL: Use authLimiter)
 app.use('/api/auth', authLimiter, authRoutes);
 
-// Payment routes (CRITICAL: Use paymentLimiter)
 if (paymentRoutes) {
   app.use('/api/payments', paymentLimiter, paymentRoutes);
 }
+app.use(cookieParser());
 
-// Protected API routes with general rate limiting
+app.get('/api/csrf-token', csrfProtection, getCsrfToken);
+app.use('/api/orders', authenticate, csrfProtection, orderRoutes);
+app.use('/api/payments', authenticate, csrfProtection, paymentRoutes);
+app.use('/api/tickets', authenticate, csrfProtection, ticketRoutes);
+app.use(['/api/customers', '/api/email'], 
+  authenticate, 
+  csrfProtection
+);
+app.use(csrfErrorHandler);
+
 app.use('/api/tickets', apiLimiter, ticketRoutes);
 app.use('/api/orders', orderLimiter, orderRoutes);
 app.use('/api/customers', apiLimiter, customerRoutes);
@@ -139,33 +189,42 @@ app.use('/api/email', apiLimiter, emailRoutes);
 app.use('/api/notifications', apiLimiter, notificationRoutes);
 app.use('/api/subscribers', apiLimiter, subscriberRoutes);
 
-// Settings routes (admin only, stricter limits)
 app.use('/api/settings', apiLimiter, settingsRoutes);
 app.use('/api/settings/advanced', apiLimiter, advancedSettingsRoutes);
 
-// Analytics routes with export rate limiting on specific endpoints
 app.use('/api/analytics', apiLimiter, analyticsRoutes);
 
-// Batch operations (admin only, stricter limits)
 app.use('/api/batch', apiLimiter, batchRoutes);
 
-// Monitoring routes (admin only, rate limited)
 app.use('/api/monitoring', apiLimiter, monitoringRoutes);
 
-// ==================== ERROR HANDLERS ====================
-
-// 404 handler
 app.use(notFoundHandler);
 
-// Sentry error handler (before custom error handler)
 app.use(sentryMiddleware.errorHandler);
 
-// Custom error handler (LAST)
 app.use(errorHandler);
 
-// Replace static file serving with:
-app.use('/uploads/qrcodes', authenticate, authorizeFileAccess, express.static(path.join(__dirname, '../uploads/qrcodes')));
+
+app.use('/uploads/qrcodes', 
+  authenticate, 
+  authorizeFileAccess,
+  fileDownloadLimiter, 
+  express.static(path.join(__dirname, '../uploads/qrcodes')))
 app.use('/uploads/avatars', authenticate, authorizeFileAccess, express.static(path.join(__dirname, '../uploads/avatars')));
 app.use('/uploads/documents', authenticate, authorizeFileAccess, express.static(path.join(__dirname, '../uploads/documents')));
+
+app.use('/uploads/qrcodes', 
+  authenticate, 
+  authorizeFileAccess, 
+  fileDownloadLimiter, 
+  express.static(path.join(__dirname, '../uploads/qrcodes'))
+);
+
+app.use('/uploads/documents', 
+  authenticate, 
+  authorizeFileAccess, 
+  fileDownloadLimiter, 
+  express.static(path.join(__dirname, '../uploads/documents'))
+);
 
 export default app;

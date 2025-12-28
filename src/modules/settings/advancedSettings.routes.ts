@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import * as settingsController from './advancedSettings.controller';
-import { validate } from '../../middleware/validate';
+import { validate } from '../../middleware/validation/validate';
 import { authenticateJWT, requireSuperAdmin } from '../../middleware/auth';
 import { auditLog } from '../../middleware/audit';
 import {
