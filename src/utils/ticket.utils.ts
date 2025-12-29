@@ -10,17 +10,18 @@ if (!process.env.QR_ENCRYPTION_KEY) {
   throw new Error('QR_ENCRYPTION_KEY is required');
 }
 
+const keyBuffer = Buffer.from(process.env.QR_ENCRYPTION_KEY, 'hex');
+if (keyBuffer.length !== 32) {
+  throw new Error('QR_ENCRYPTION_KEY must be 64 character hex (32 bytes)');
+}
+
 if (!/^[0-9a-fA-F]{64}$/.test(process.env.QR_ENCRYPTION_KEY)) {
   throw new Error('QR_ENCRYPTION_KEY must be 64 character hex string');
 }
 
-const ENCRYPTION_KEY = Buffer.from(process.env.QR_ENCRYPTION_KEY, 'hex');
-if (ENCRYPTION_KEY.length !== 32) {
-  throw new Error('QR_ENCRYPTION_KEY invalid length after hex decode');
-}
-
 
 const IV_LENGTH = 16;
+const ENCRYPTION_KEY = Buffer.from(process.env.QR_ENCRYPTION_KEY!, 'hex');
 const ALGORITHM = 'aes-256-cbc';
 
 export const generateTicketCode = (): string => {
@@ -70,9 +71,6 @@ export const decryptTicketData = (encryptedData: string): string => {
   }
 };
 
-/**
- * Generate QR code and save to local storage
- */
 export const generateQRCode = async (
   ticketCode: string,
   ticketData: any

@@ -13,6 +13,8 @@ import {
   createUserSchema,
   updateUserSchema,
   changePasswordSchema,
+  forgotPasswordSchema, 
+  resetPasswordSchema, 
 } from './auth.schema';
 
 const router = Router();
@@ -112,7 +114,6 @@ router.post(
   twoFactorController.regenerateBackupCodes
 );
 
-// User management (Super Admin only)
 router.get('/users', requireSuperAdmin, authController.listUsers);
 router.get('/users/:id', requireSuperAdmin, authController.getUser);
 
@@ -161,4 +162,16 @@ router.delete(
   authController.deactivateUser
 );
 
+router.post(
+  '/forgot-password',
+  rateLimit({ windowMs: 3600000, max: 3 }), 
+  validate(forgotPasswordSchema),
+  authController.requestPasswordReset
+);
+router.post(
+  '/reset-password',
+  rateLimit({ windowMs: 3600000, max: 3 }),
+  validate(resetPasswordSchema),
+  authController.resetPassword // Add this controller method
+);
 export default router;

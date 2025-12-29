@@ -1,7 +1,9 @@
-// src/utils/cache.service.ts - PRODUCTION-READY VERSION
+// src/utils/cache.service.ts
 import redis from '../config/cache';
 import prisma from '../config/database';
 import { logger } from './logger';
+import { monitoring } from './monitoring.service';
+import crypto from 'crypto';
 
 export class CacheService {
   private readonly DEFAULT_TTL = 300; // 5 minutes
@@ -219,16 +221,21 @@ export class CacheService {
     const cached = await this.get<T>(key);
     if (cached !== null) return cached;
     
-    // Use distributed lock to prevent stampede
     const lockKey = `lock:${key}`;
-    const lockAcquired = await redis.set(lockKey, '1', 'NX', 'EX', 10);
+    const lockValue = crypto.randomBytes(16).toString('hex');
+    
+    const lockAcquired = await redis.set(
+      lockKey, 
+      lockValue, 
+      'EX',
+      10,
+      'NX'
+    );
     
     if (!lockAcquired) {
-      // Another process is generating, wait and retry
-      await new Promise(resolve => setTimeout(resolve, 100));
+      await new Promise(resolve => setTimeout(resolve, 100 + Math.random() * 100));
       const retry = await this.get<T>(key);
       if (retry) return retry;
-      // If still not available, proceed to generate
     }
     
     try {
@@ -236,10 +243,12 @@ export class CacheService {
       await this.set(key, data, ttl);
       return data;
     } finally {
-      await redis.del(lockKey);
+      const currentLock = await redis.get(lockKey);
+      if (currentLock === lockValue) {
+        await redis.del(lockKey);
+      }
     }
   }
-
 
   async increment(key: string, amount = 1): Promise<number> {
     return await this.safeRedisOperation(

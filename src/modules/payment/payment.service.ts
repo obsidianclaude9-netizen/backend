@@ -4,10 +4,10 @@ import axios from 'axios';
 import { PrismaClient, OrderStatus, TicketStatus } from '@prisma/client';
 import { logger } from '../../utils/logger';
 import { AppError } from '../../middleware/errorHandler';
-import { redis } from '../config/redis';
-import { emailService } from './email.service';
-import { immutableAuditService } from './immutableAudit.service';
-import { ticketService } from './ticket.service';
+import redis from '../../config/cache';
+import { emailService } from '../../utils/email.service';
+import { immutableAuditService } from '../../services/immutableAudit.service';
+import { ticketService } from '../tickets/ticket.service';
 import { Request } from 'express';
 
 const prisma = new PrismaClient();
@@ -48,14 +48,12 @@ interface WebhookPayload {
 
 export class PaymentService {
   private readonly paystackSecretKey: string;
-  private readonly paystackPublicKey: string;
   private readonly paystackBaseUrl = 'https://api.paystack.co';
   private readonly webhookIdempotencyTTL = 604800; 
   private readonly maxWebhookAge = 48; 
 
   constructor() {
     this.paystackSecretKey = process.env.PAYSTACK_SECRET_KEY || '';
-    this.paystackPublicKey = process.env.PAYSTACK_PUBLIC_KEY || '';
 
     if (!this.paystackSecretKey) {
       throw new Error('PAYSTACK_SECRET_KEY is not configured');
@@ -197,19 +195,27 @@ export class PaymentService {
     logger.info('Webhook signature verified successfully');
   }
 
-  /**
-   * Check if webhook was already processed (idempotency)
-   */
+
   private async checkIdempotency(event: string, reference: string): Promise<boolean> {
     const idempotencyKey = `webhook:${event}:${reference}`;
     const status = await redis.get(idempotencyKey);
+      
+    if (!status) {
+      const existing = await prisma.webhookLog.findUnique({
+        where: {
+          event_reference: {
+            event,
+            reference
+          }
+        }
+      });
+      return existing !== null;
+    }
     
     return status !== null;
   }
 
-  /**
-   * Mark webhook as being processed
-   */
+ 
   private async markWebhookProcessing(event: string, reference: string): Promise<void> {
     const idempotencyKey = `webhook:${event}:${reference}`;
     const lockKey = `webhook:lock:${event}:${reference}`;
@@ -225,9 +231,6 @@ export class PaymentService {
     await redis.setex(idempotencyKey, this.webhookIdempotencyTTL, 'processing');
   }
 
-  /**
-   * Mark webhook as completed
-   */
   private async markWebhookCompleted(event: string, reference: string): Promise<void> {
     const idempotencyKey = `webhook:${event}:${reference}`;
     const lockKey = `webhook:lock:${event}:${reference}`;
@@ -236,17 +239,11 @@ export class PaymentService {
     await redis.del(lockKey);
   }
 
-  /**
-   * Clear webhook processing lock
-   */
   private async clearWebhookLock(event: string, reference: string): Promise<void> {
     const lockKey = `webhook:lock:${event}:${reference}`;
     await redis.del(lockKey);
   }
 
-  /**
-   * Validate webhook timestamp to prevent replay attacks
-   */
   private async validateWebhookTimestamp(data: any): Promise<void> {
     if (data.paid_at) {
       const paidAt = new Date(data.paid_at);
@@ -264,9 +261,6 @@ export class PaymentService {
     }
   }
 
-  /**
-   * Process webhook event based on type
-   */
   private async processWebhookEvent(payload: WebhookPayload, ipAddress?: string) {
     const { event, data } = payload;
 
@@ -295,9 +289,6 @@ export class PaymentService {
     }
   }
 
-  /**
-   * Handle successful payment
-   */
   private async handleSuccessfulPayment(data: any, ipAddress?: string) {
     const reference = data.reference;
 
@@ -420,9 +411,6 @@ export class PaymentService {
     });
   }
 
-  /**
-   * Handle failed payment
-   */
   private async handleFailedPayment(data: any, ipAddress?: string) {
     const reference = data.reference;
 
@@ -486,9 +474,6 @@ export class PaymentService {
     });
   }
 
-  /**
-   * Handle disputed payment (chargeback)
-   */
   private async handleDisputedPayment(data: any, ipAddress?: string) {
     const reference = data.reference;
 
@@ -574,9 +559,6 @@ export class PaymentService {
     });
   }
 
-  /**
-   * Handle transfer success
-   */
   private async handleTransferSuccess(data: any, ipAddress?: string) {
     logger.info('Transfer success webhook received', { data });
 
@@ -591,9 +573,6 @@ export class PaymentService {
     return { message: 'Transfer success recorded' };
   }
 
-  /**
-   * Handle transfer failure
-   */
   private async handleTransferFailed(data: any, ipAddress?: string) {
     logger.warn('Transfer failed webhook received', { data });
 
@@ -608,9 +587,6 @@ export class PaymentService {
     return { message: 'Transfer failure recorded' };
   }
 
-  /**
-   * Handle refund processed
-   */
   private async handleRefundProcessed(data: any, ipAddress?: string) {
     const reference = data.reference;
 
@@ -675,9 +651,6 @@ export class PaymentService {
     });
   }
 
-  /**
-   * Send payment confirmation email
-   */
   private async sendPaymentConfirmationEmail(order: any, paymentData: any) {
     try {
       await emailService.sendEmail({
@@ -700,9 +673,6 @@ export class PaymentService {
     }
   }
 
-  /**
-   * Send payment failure email
-   */
   private async sendPaymentFailureEmail(order: any, paymentData: any) {
     try {
       await emailService.sendEmail({
@@ -722,9 +692,6 @@ export class PaymentService {
     }
   }
 
-  /**
-   * Log webhook failure
-   */
   private async logWebhookFailure(payload: any, ipAddress?: string, reason?: string) {
     try {
       await immutableAuditService.createLog({
@@ -743,9 +710,6 @@ export class PaymentService {
     }
   }
 
-  /**
-   * Initialize payment (for frontend to call)
-   */
   async initializePayment(orderId: string) {
     const order = await prisma.order.findUnique({
       where: { id: orderId },
@@ -808,9 +772,6 @@ export class PaymentService {
     }
   }
 
-  /**
-   * Verify payment status (for frontend polling)
-   */
   async verifyPayment(reference: string) {
     try {
       const response = await axios.get<PaystackResponse>(

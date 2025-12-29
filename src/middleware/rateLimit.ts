@@ -1,10 +1,10 @@
 // src/middleware/rateLimit.ts 
 import rateLimit, { RateLimitRequestHandler } from 'express-rate-limit';
-
 import RedisStore from 'rate-limit-redis';
 import { createClient } from 'redis';
 import { Request, Response } from 'express';
 import { logger } from '../utils/logger';
+import prisma from '../config/database';
 import redis from '../config/cache';
 
 const redisClient = createClient({
@@ -38,6 +38,21 @@ declare module 'express' {
   }
 }
 
+import { MemoryStore } from 'express-rate-limit';
+
+const createStore = (prefix: string) => {
+  try {
+    return new RedisStore({
+      sendCommand: (...args: string[]) => redisClient.sendCommand(args),
+      prefix: `rl:${prefix}:`,
+    });
+  } catch (error) {
+    logger.warn(`Redis unavailable for rate limiter, using memory store for ${prefix}`);
+    return new MemoryStore();
+  }
+};
+
+
 const createRedisStore = (prefix: string) => {
   return new RedisStore({
     sendCommand: (...args: string[]) => redisClient.sendCommand(args),
@@ -48,10 +63,10 @@ const createRedisStore = (prefix: string) => {
 export const apiLimiter: RateLimitRequestHandler = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 100,
+  store: createStore('api'),
   message: 'Too many requests, please try again later',
   standardHeaders: true,
   legacyHeaders: false,
-  store: createRedisStore('api'),
   skip: (req) => {
     return req.path === '/health' || req.path === '/api/health';
   },
@@ -85,7 +100,30 @@ export const authLimiter = rateLimit({
     });
   },
 });
-
+async function redisLockout(email: string, success: boolean) {
+  const key = `lockout:${email}`;
+  
+  if (success) {
+    await redis.del(key);
+    return { locked: false };
+  }
+  
+  const attempts = await redis.incr(key);
+  await redis.expire(key, 3600); // 1 hour
+  
+  if (attempts >= 10) {
+    return {
+      locked: true,
+      remainingAttempts: 0,
+      unlockAt: new Date(Date.now() + 3600000)
+    };
+  }
+  
+  return {
+    locked: false,
+    remainingAttempts: Math.max(0, 10 - attempts)
+  };
+}
 export const accountLockout = async (
   email: string,
   success: boolean

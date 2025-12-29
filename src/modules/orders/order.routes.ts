@@ -1,12 +1,12 @@
 // src/modules/orders/order.routes.ts
 import express from 'express';
-import { authenticate, authorize } from '../../middleware/auth';
-import { validate } from '../../middleware/validation';
-import { rateLimit } from '../../middleware/rateLimit';
+import { authenticate, requireAdmin, requireStaff, requireSuperAdmin } from '../../middleware/auth';
+import { validate } from '../../middleware/validate';
+import { apiLimiter } from '../../middleware/rateLimit';
 import { csrfProtection } from '../../middleware/csrf';
-import { UserRole } from '@prisma/client';
 import * as orderController from './order.controller';
 import * as orderSchema from './order.schema';
+import { fileDownloadLimiter } from '../../middleware/rateLimit';
 
 const router = express.Router();
 
@@ -14,168 +14,139 @@ router.use(authenticate);
 
 router.get(
   '/',
-  rateLimit({ windowMs: 60000, max: 100 }),
+  apiLimiter,
   orderController.listOrders
 );
 
-// Get specific order
 router.get(
   '/:id',
-  rateLimit({ windowMs: 60000, max: 100 }),
+  apiLimiter,
   orderController.getOrder
 );
 
-// Get order by number
 router.get(
   '/number/:orderNumber',
-  rateLimit({ windowMs: 60000, max: 100 }),
+  apiLimiter,
   orderController.getOrderByNumber
 );
 
-// Get order timeline
 router.get(
   '/:id/timeline',
-  rateLimit({ windowMs: 60000, max: 100 }),
+  apiLimiter,
   orderController.getOrderTimeline
 );
 
-/**
- * Customer-specific routes
- */
-
-// Get customer's orders
 router.get(
   '/customer/:customerId',
-  rateLimit({ windowMs: 60000, max: 100 }),
+  apiLimiter,
   orderController.getCustomerOrders
 );
 
-// Download tickets
 router.get(
   '/:id/tickets/download',
-  rateLimit({ windowMs: 60000, max: 10 }),
+  apiLimiter,
   orderController.downloadTickets
 );
 
-// Download receipt
 router.get(
   '/:id/receipt',
-  rateLimit({ windowMs: 60000, max: 10 }),
+  apiLimiter,
   orderController.downloadReceipt
 );
 
-
-// Create order
 router.post(
   '/',
-  authorize([UserRole.STAFF, UserRole.ADMIN, UserRole.SUPER_ADMIN]),
+  requireStaff,
   csrfProtection,
-  rateLimit({ windowMs: 3600000, max: 100 }), 
+  apiLimiter, 
   validate(orderSchema.createOrderSchema),
   orderController.createOrder
 );
 
-// Update order
 router.patch(
   '/:id',
-  authorize([UserRole.STAFF, UserRole.ADMIN, UserRole.SUPER_ADMIN]),
+  requireStaff,
   csrfProtection,
-  rateLimit({ windowMs: 3600000, max: 200 }),
+  apiLimiter,
   validate(orderSchema.updateOrderSchema),
   orderController.updateOrder
 );
 
-// Confirm payment
 router.post(
   '/:id/confirm-payment',
-  authorize([UserRole.ADMIN, UserRole.SUPER_ADMIN]),
+  requireAdmin,
   csrfProtection,
-  rateLimit({ windowMs: 3600000, max: 100 }),
+  apiLimiter,
   validate(orderSchema.confirmPaymentSchema),
   orderController.confirmPayment
 );
 
-// Cancel order
 router.post(
   '/:id/cancel',
-  authorize([UserRole.ADMIN, UserRole.SUPER_ADMIN]),
+  requireAdmin,
   csrfProtection,
-  rateLimit({ windowMs: 3600000, max: 50 }),
+  apiLimiter,
   orderController.cancelOrder
 );
 
-// Resend confirmation
 router.post(
   '/:id/resend-confirmation',
-  authorize([UserRole.STAFF, UserRole.ADMIN, UserRole.SUPER_ADMIN]),
+  requireStaff,
   csrfProtection,
-  rateLimit({ windowMs: 3600000, max: 20 }), // 20 resends per hour
+  apiLimiter,
   orderController.resendConfirmation
 );
 
-
-// Get statistics
 router.get(
   '/stats/overview',
-  authorize([UserRole.ADMIN, UserRole.SUPER_ADMIN]),
-  rateLimit({ windowMs: 60000, max: 100 }),
+  requireAdmin,
+  apiLimiter,
   orderController.getOrderStats
 );
 
-// Revenue breakdown
 router.get(
   '/analytics/revenue',
-  authorize([UserRole.ADMIN, UserRole.SUPER_ADMIN]),
-  rateLimit({ windowMs: 60000, max: 100 }),
+  requireAdmin,
+  apiLimiter,
   orderController.getRevenueBreakdown
 );
 
-// Export orders
 router.get(
   '/export/csv',
-  authorize([UserRole.ADMIN, UserRole.SUPER_ADMIN]),
-  rateLimit({ windowMs: 3600000, max: 10 }), // 10 exports per hour
+  requireAdmin,
+  apiLimiter,
   orderController.exportOrdersCSV
 );
 
-// Bulk create orders
 router.post(
   '/bulk',
-  authorize([UserRole.ADMIN, UserRole.SUPER_ADMIN]),
+  requireAdmin,
   csrfProtection,
-  rateLimit({ windowMs: 3600000, max: 5 }), // 5 bulk operations per hour
+  apiLimiter, 
   orderController.bulkCreateOrders
 );
 
-// Refund order
 router.post(
   '/:id/refund',
-  authorize([UserRole.ADMIN, UserRole.SUPER_ADMIN]),
+  requireAdmin,
   csrfProtection,
-  rateLimit({ windowMs: 3600000, max: 20 }),
+  apiLimiter,
   orderController.refundOrder
 );
 
-// Mark as fraud
 router.post(
   '/:id/mark-fraud',
-  authorize([UserRole.SUPER_ADMIN]), // Super admin only
+  requireSuperAdmin,
   csrfProtection,
-  rateLimit({ windowMs: 3600000, max: 10 }),
+  apiLimiter,
   orderController.markAsFraud
 );
-router.post('/:id/resend-confirmation',
-  authenticate,
-  csrfProtection, // ✅ Add CSRF
-  rateLimit({ windowMs: 3600000, max: 5 }),
-  orderController.resendConfirmation
-);
 
-// For GET endpoints that change state, use POST
-router.post('/:id/tickets/download', // Change to POST
+router.post('/:id/tickets/download', 
   authenticate,
   csrfProtection,
   fileDownloadLimiter,
   orderController.downloadTickets
 );
+
 export default router;

@@ -7,7 +7,7 @@ import { Request } from 'express';
 import { fileTypeFromBuffer } from 'file-type';
 import { logger } from '../utils/logger';
 import { promises as fsPromises } from 'fs';
-
+import { Response, NextFunction } from 'express';
 const ALLOWED_EXTENSIONS = [
   '.jpg', '.jpeg', '.png', '.gif', '.webp',
   '.pdf', '.doc', '.docx', '.xls', '.xlsx',
@@ -22,17 +22,27 @@ const ALLOWED_MIME_TYPES = [
   'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
 ];
 
-const MAX_FILE_SIZE = 12 * 1024 * 1024; 
+
 const MAX_FILES = 5;
+const MAX_AVATAR_SIZE = 2 * 1024 * 1024;
+const MAX_DOCUMENT_SIZE = 10 * 1024 * 1024;
 
 
-const ensureDir = (dir: string) => {
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
+const uploadsDir = process.env.UPLOADS_DIR || './uploads/documents';
+
+if (!fs.existsSync(uploadsDir)) {
+  fs.mkdirSync(uploadsDir, { recursive: true });
+}
+const storage = multer.diskStorage({
+  destination: (_req, _file, cb) => {
+    cb(null, uploadsDir);
+  },
+  filename: (_req, file, cb) => {
+    const sanitized = path.basename(file.originalname).replace(/[^a-zA-Z0-9._-]/g, '_');
+    cb(null, `${Date.now()}-${sanitized}`);
   }
-};
+});
 
-const storage = multer.memoryStorage();
 
 
 export const postUploadValidation = async (
@@ -48,8 +58,7 @@ export const postUploadValidation = async (
   if (!isValid) {
     return res.status(400).json({ error: 'File validation failed' });
   }
-  
-  // NOW write to disk
+
   const finalPath = path.join(uploadsDir, `${Date.now()}-${crypto.randomBytes(16).toString('hex')}`);
   await fsPromises.writeFile(finalPath, req.file.buffer);
   req.file.path = finalPath;
@@ -63,7 +72,6 @@ async function validateUploadedBuffer(buffer: Buffer): Promise<boolean> {
   const allowedTypes = ['jpg', 'png', 'gif', 'webp', 'pdf', 'docx', 'xlsx'];
   if (!allowedTypes.includes(fileType.ext)) return false;
 
-  // Check for malicious content
   const content = buffer.toString('utf8', 0, 1024);
   const dangerousPatterns = [/<script/i, /<\?php/i, /<%/, /#!/];
   
@@ -108,7 +116,7 @@ export const upload = multer({
   storage,
   fileFilter,
   limits: {
-    fileSize: MAX_FILE_SIZE,
+    fileSize: MAX_DOCUMENT_SIZE,
     files: MAX_FILES,
   },
 });
@@ -163,8 +171,16 @@ export const validateUploadedFile = async (filepath: string): Promise<boolean> =
 
 
 export const uploadSingle = upload.single('file');
-export const uploadAvatar = upload.single('avatar');
-export const uploadCustomerDoc = upload.single('customerDoc');
+export const uploadAvatar = multer({
+  storage,
+  fileFilter,
+  limits: { fileSize: MAX_AVATAR_SIZE },
+});
+export const uploadCustomerDoc = multer({
+  storage,
+  fileFilter,
+  limits: { fileSize: MAX_DOCUMENT_SIZE },
+});
 export const uploadOrderDoc = upload.single('orderDoc');
 export const uploadMultiple = upload.array('files', MAX_FILES);
 
@@ -180,3 +196,8 @@ export const deleteFile = (filepath: string): boolean => {
     return false;
   }
 };
+export const uploadMiddleware = multer({
+  storage,
+  fileFilter,
+  limits: { fileSize: MAX_DOCUMENT_SIZE }
+});

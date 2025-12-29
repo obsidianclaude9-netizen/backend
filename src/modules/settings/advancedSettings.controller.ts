@@ -1,6 +1,9 @@
 import { Request, Response } from 'express';
 import { AdvancedSettingsService } from './advancedSettings.service';
 import { asyncHandler } from '../../middleware/errorHandler';
+import prisma from '../../config/database';
+import { AppError } from '../../middleware/errorHandler';
+import { UserRole } from '@prisma/client';
 
 const settingsService = new AdvancedSettingsService();
 
@@ -54,7 +57,6 @@ export const getActiveSessions = asyncHandler(async (req: Request, res: Response
 
 
 export const terminateSession = asyncHandler(async (req: Request, res: Response) => {
- 
   const targetSession = await prisma.activeSession.findUnique({
     where: { id: req.params.sessionId }
   });
@@ -72,7 +74,7 @@ export const terminateSession = asyncHandler(async (req: Request, res: Response)
   
   const result = await settingsService.terminateSession(
     req.params.sessionId,
-    targetSession.userId // Use actual session owner
+    targetSession.userId
   );
   
   res.json(result);

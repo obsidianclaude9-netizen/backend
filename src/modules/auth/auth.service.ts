@@ -1,5 +1,5 @@
 // src/modules/auth/auth.service.ts
-import jwt, { SignOptions } from 'jsonwebtoken';
+import jwt from 'jsonwebtoken';
 import { accountLockout } from '../../middleware/rateLimit';
 import bcrypt from 'bcrypt';
 import prisma from '../../config/database';
@@ -10,6 +10,8 @@ import { logger } from '../../utils/logger';
 import * as speakeasy from 'speakeasy';
 import * as QRCode from 'qrcode';
 import crypto from 'crypto';
+import { blacklistToken } from '../../middleware/auth';
+import { emailQueue } from '../../config/queue';
 
 export interface JWTPayload {
   userId: string;
@@ -90,42 +92,30 @@ export class AuthService {
       role: user.role,
     };
 
-    const accessToken = jwt.sign(
-      payload,
-      process.env.JWT_SECRET!,
-      { expiresIn: process.env.JWT_ACCESS_EXPIRY || '15m' } as SignOptions
-    );
+    const accessToken = jwt.sign(payload, process.env.JWT_SECRET!, {
+      expiresIn: process.env.JWT_ACCESS_EXPIRY || '15m'
+    });
 
-    const refreshToken = jwt.sign(
-      { userId: user.id },
-      process.env.JWT_REFRESH_SECRET!,
-      { expiresIn: process.env.JWT_REFRESH_EXPIRY || '7d' } as SignOptions
-    );
+    const refreshToken = jwt.sign({ userId: user.id }, process.env.JWT_REFRESH_SECRET!, {
+      expiresIn: process.env.JWT_REFRESH_EXPIRY || '7d'
+    });
 
     logger.info(`User logged in: ${user.email}`);
-  const sessionId = crypto.randomBytes(32).toString('hex');
+    const sessionId = crypto.randomBytes(32).toString('hex');
+    
+    await prisma.activeSession.create({
+      data: {
+        id: sessionId,
+        userId: user.id,
+        token: accessToken,
+        ipAddress: ipAddress || 'unknown',
+        userAgent: userAgent || 'unknown',
+        expiresAt: new Date(Date.now() + 15 * 60 * 1000),
+      }
+    });
   
-  await prisma.activeSession.create({
-    data: {
-      id: sessionId,
-      userId: user.id,
-      token: accessToken,
-      ipAddress: req.ip,
-      userAgent: req.get('user-agent'),
-      expiresAt: new Date(Date.now() + 15 * 60 * 1000),
-    }
-  });
-    return {
-      user: {
-        id: user.id,
-        email: user.email,
-        firstName: user.firstName,
-        lastName: user.lastName,
-        role: user.role,
-      },
-      accessToken,
-      refreshToken,
-    };
+    return { user, accessToken, refreshToken };
+
   }
 
   async refreshToken(token: string) {
@@ -140,12 +130,9 @@ export class AuthService {
     const tokenExp = Math.floor(Date.now() / 1000) + (7 * 24 * 60 * 60);
     await blacklistToken(token, tokenExp - Math.floor(Date.now() / 1000));
     
-    // Generate NEW refresh token (rotation)
-    const newRefreshToken = jwt.sign(
-      { userId: user.id },
-      process.env.JWT_REFRESH_SECRET!,
-      { expiresIn: process.env.JWT_REFRESH_EXPIRY || '7d' }
-    );
+    const newRefreshToken = jwt.sign({ userId: user.id }, process.env.JWT_REFRESH_SECRET!, {
+    expiresIn: process.env.JWT_REFRESH_EXPIRY || '7d'
+    });
     
     const accessToken = jwt.sign(
       { userId: user.id, email: user.email, role: user.role, tokenVersion: user.tokenVersion },

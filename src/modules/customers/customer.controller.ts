@@ -5,11 +5,14 @@ import { asyncHandler } from '../../middleware/errorHandler';
 import { validateUploadedFile } from '../../middleware/upload';
 import { extractAuditContext } from '../../middleware/audit';
 import { UserRole } from '@prisma/client';
+import prisma from '../../config/database';
 import {
   CreateCustomerInput,
   UpdateCustomerInput,
   ListCustomersInput,
 } from './customer.schema';
+import { AppError } from '../../middleware/errorHandler';
+import path from 'path';
 
 const customerService = new CustomerService();
 
@@ -28,17 +31,9 @@ export const listCustomers = asyncHandler(async (req: Request, res: Response) =>
 
 export const getCustomer = asyncHandler(async (req: Request, res: Response) => {
   const { id } = req.params;
-
-  if (req.user.role === UserRole.CUSTOMER) {
-    if (req.user.userId !== id) {
-      throw new AppError(403, 'Access denied');
-    }
-  }
-  
   const customer = await customerService.getCustomer(id);
   res.json(customer);
-}
-
+});
 export const updateCustomer = asyncHandler(async (req: Request, res: Response) => {
   const { id } = req.params;
   const data: UpdateCustomerInput = req.body;
@@ -97,6 +92,7 @@ export const searchCustomers = asyncHandler(async (req: Request, res: Response) 
 });
 
 export const uploadDocument = asyncHandler(async (req: Request, res: Response) => {
+  const { id } = req.params;
   if (!req.file) {
     res.status(400).json({ error: 'No file uploaded' });
     return;
@@ -128,6 +124,22 @@ export const deleteDocument = asyncHandler(async (req: Request, res: Response) =
 export const downloadDocument = asyncHandler(async (req: Request, res: Response) => {
   const { id } = req.params;
   const context = extractAuditContext(req);
+  
+  const customer = await prisma.customer.findUnique({
+    where: { id },
+    select: { id: true, documentPath: true }
+  });
+  
+  if (!customer) {
+    throw new AppError(404, 'Customer not found');
+  }
+  const isAdmin = req.user.role === UserRole.ADMIN || req.user.role === UserRole.SUPER_ADMIN;
+  const isOwnDocument = req.user.userId === id;
+  
+  if (!isAdmin && !isOwnDocument) {
+    throw new AppError(403, 'Access denied');
+  }
+  
   const document = await customerService.getDocument(id, context);
   res.download(document.path, document.name || 'document');
 });
