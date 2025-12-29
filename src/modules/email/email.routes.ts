@@ -1,7 +1,7 @@
 // src/modules/email/email.routes.ts
 import { Router } from 'express';
 import * as emailController from './email.controller';
-import { validate } from '../../middleware/validation/validate';
+import { validate } from '../../middleware/validate';
 import { authenticateJWT, requireAdmin } from '../../middleware/auth';
 import { emailLimiter } from '../../middleware/rateLimit';
 import { auditLog } from '../../middleware/audit';

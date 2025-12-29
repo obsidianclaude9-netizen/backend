@@ -2,7 +2,7 @@
 import { Router } from 'express';
 import * as analyticsController from './analytics.controller';
 import { authenticateJWT, requireAdmin } from '../../middleware/auth';
-import { validate } from '../../middleware/validation/validate';
+import { validate } from '../../middleware/validate';
 import { cache } from '../../middleware/cache';
 import { exportLimiter, apiLimiter } from '../../middleware/rateLimit';
 import { analyticsQuerySchema } from './analytics.schema';

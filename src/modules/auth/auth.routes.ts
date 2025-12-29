@@ -2,7 +2,7 @@
 import { Router } from 'express';
 import * as authController from './auth.controller';
 import * as twoFactorController from './twoFactor.controller';
-import { validate } from '../../middleware/validation/validate';
+import { validate } from '../../middleware/validate';
 import { authenticateJWT, requireSuperAdmin } from '../../middleware/auth';
 import { authLimiter } from '../../middleware/rateLimit';
 import { auditLog } from '../../middleware/audit';

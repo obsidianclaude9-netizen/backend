@@ -2,7 +2,7 @@
 import { z } from 'zod';
 import DOMPurify from 'isomorphic-dompurify';
 import { Request, Response, NextFunction } from 'express';
-import { logger } from '../../utils/logger';
+import { logger } from '../utils/logger';
 
 
 export const sanitizeString = (str: string): string => {
