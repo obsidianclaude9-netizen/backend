@@ -61,20 +61,24 @@ export class CacheService {
   }
 
   async get<T>(key: string): Promise<T | null> {
-    try {
-      // Try Redis first (with safety wrapper)
-      const data = await this.safeRedisOperation(
-        () => redis.get(key),
-        null
-      );
-
-      if (data) {
-        logger.debug(`Cache HIT (Redis): ${key}`);
-        return JSON.parse(data);
+ 
+    if (this.isRedisHealthy) {
+      try {
+        const data = await redis.get(key);
+        if (data) {
+          return JSON.parse(data);
+        }
+      } catch (error) {
+        logger.error(`Redis get failed for ${key}:`, error);
+        monitoring.captureException(error as Error, { operation: 'cache.get', key });
+        this.isRedisHealthy = false;
+        // Continue to DB fallback
       }
+    }
 
-      // Fallback to database cache for analytics
-      if (key.startsWith('analytics:')) {
+    // 2. DB Fallback (only for analytics)
+    if (key.startsWith('analytics:')) {
+      try {
         const dbCache = await prisma.analyticsCache.findUnique({
           where: { 
             cacheKey: key,
@@ -83,28 +87,18 @@ export class CacheService {
         });
 
         if (dbCache) {
-          logger.debug(`Cache HIT (DB): ${key}`);
-          // Warm up Redis (non-blocking)
-          if (this.isRedisHealthy) {
-            this.safeRedisOperation(
-              () => redis.setex(key, this.DEFAULT_TTL, JSON.stringify(dbCache.data)),
-              undefined
-            ).catch(() => {
-              // Ignore warmup failures
-            });
-          }
+          logger.debug(`Cache HIT (DB fallback): ${key}`);
           return dbCache.data as T;
         }
+      } catch (dbError) {
+        logger.error(`DB cache get failed for ${key}:`, dbError);
+        monitoring.captureException(dbError as Error, { operation: 'db-cache.get', key });
       }
-
-      logger.debug(`Cache MISS: ${key}`);
-      return null;
-    } catch (error) {
-      logger.error(`Cache get error for key ${key}:`, error);
-      return null;
     }
-  }
 
+    return null;
+  }
+  
   
   async set(key: string, value: any, ttl?: number): Promise<boolean> {
     try {
@@ -174,44 +168,19 @@ export class CacheService {
   }
 
   async deletePattern(pattern: string): Promise<number> {
-    try {
-      let deletedCount = 0;
-
-      // Delete from Redis
-      if (this.isRedisHealthy) {
-        try {
-          const keys = await redis.keys(pattern);
-          if (keys.length > 0) {
-            await redis.del(...keys);
-            deletedCount = keys.length;
-            logger.info(`Invalidated ${keys.length} Redis keys matching: ${pattern}`);
-          }
-        } catch (error) {
-          logger.error('Redis pattern delete error:', error);
-        }
-      }
-
-      // Clean DB cache - ✅ FIXED: Use parameterized query
-      if (pattern.startsWith('analytics:')) {
-        try {
-          // ✅ Use template literal syntax for safe parameterization
-          const likePattern = pattern.replace('*', '%');
-          
-          const result = await prisma.$executeRaw`
-            DELETE FROM "AnalyticsCache" WHERE "cacheKey" LIKE ${likePattern}
-          `;
-          
-          logger.info(`Deleted ${result} DB cache entries matching: ${pattern}`);
-        } catch (error) {
-          logger.error('DB pattern delete error:', error);
-        }
-      }
-
-      return deletedCount;
-    } catch (error) {
-      logger.error('Cache pattern delete error:', error);
-      return 0;
+   
+    if (!/^[a-zA-Z0-9:*_-]+$/.test(pattern)) {
+      throw new Error('Invalid cache pattern');
     }
+
+    const likePattern = pattern.replace(/\*/g, '%');
+
+    const result = await prisma.$executeRaw`
+      DELETE FROM "AnalyticsCache" 
+      WHERE "cacheKey" LIKE ${likePattern}
+    `;
+    
+    return Number(result);
   }
 
   async del(key: string): Promise<boolean> {
@@ -242,20 +211,33 @@ export class CacheService {
     );
   }
 
-    
   async getOrSet<T>(
-      key: string,
-      fetcher: () => Promise<T>,
-      ttl?: number
-    ): Promise<T> {
-      const cached = await this.get<T>(key);
-      if (cached !== null) {
-        return cached;
-      }
-
+    key: string,
+    fetcher: () => Promise<T>,
+    ttl?: number
+  ): Promise<T> {
+    const cached = await this.get<T>(key);
+    if (cached !== null) return cached;
+    
+    // Use distributed lock to prevent stampede
+    const lockKey = `lock:${key}`;
+    const lockAcquired = await redis.set(lockKey, '1', 'NX', 'EX', 10);
+    
+    if (!lockAcquired) {
+      // Another process is generating, wait and retry
+      await new Promise(resolve => setTimeout(resolve, 100));
+      const retry = await this.get<T>(key);
+      if (retry) return retry;
+      // If still not available, proceed to generate
+    }
+    
+    try {
       const data = await fetcher();
       await this.set(key, data, ttl);
       return data;
+    } finally {
+      await redis.del(lockKey);
+    }
   }
 
 

@@ -21,7 +21,7 @@ export interface JWTPayload {
 }
 const getSaltRounds = (): number => {
   const envRounds = parseInt(process.env.BCRYPT_ROUNDS || '14');
-  if (envRounds < 12 || envRounds > 16) {
+  if (envRounds < 14 || envRounds > 18) { 
     logger.warn(`Invalid BCRYPT_ROUNDS (${envRounds}), using default 14`);
     return 14;
   }
@@ -103,7 +103,18 @@ export class AuthService {
     );
 
     logger.info(`User logged in: ${user.email}`);
-
+  const sessionId = crypto.randomBytes(32).toString('hex');
+  
+  await prisma.activeSession.create({
+    data: {
+      id: sessionId,
+      userId: user.id,
+      token: accessToken,
+      ipAddress: req.ip,
+      userAgent: req.get('user-agent'),
+      expiresAt: new Date(Date.now() + 15 * 60 * 1000),
+    }
+  });
     return {
       user: {
         id: user.id,
@@ -118,37 +129,31 @@ export class AuthService {
   }
 
   async refreshToken(token: string) {
-    try {
-      const decoded = jwt.verify(
-        token,
-        process.env.JWT_REFRESH_SECRET!
-      ) as { userId: string };
-
-      const user = await prisma.user.findUnique({
-        where: { id: decoded.userId },
-      });
-
-      if (!user || !user.isActive) {
-        throw new AppError(401, 'Invalid refresh token');
-      }
-
-      const payload: JWTPayload = {
-        userId: user.id,
-        email: user.email,
-        role: user.role,
-        tokenVersion: user.tokenVersion
-      };
-
-      const accessToken = jwt.sign(
-        payload,
-        process.env.JWT_SECRET!,
-        { expiresIn: process.env.JWT_ACCESS_EXPIRY || '15m' } as SignOptions
-      );
-
-      return { accessToken };
-    } catch (error) {
+    const decoded = jwt.verify(token, process.env.JWT_REFRESH_SECRET!) as { userId: string };
+    
+    const user = await prisma.user.findUnique({ where: { id: decoded.userId } });
+    if (!user || !user.isActive) {
       throw new AppError(401, 'Invalid refresh token');
     }
+    
+    // Blacklist old refresh token
+    const tokenExp = Math.floor(Date.now() / 1000) + (7 * 24 * 60 * 60);
+    await blacklistToken(token, tokenExp - Math.floor(Date.now() / 1000));
+    
+    // Generate NEW refresh token (rotation)
+    const newRefreshToken = jwt.sign(
+      { userId: user.id },
+      process.env.JWT_REFRESH_SECRET!,
+      { expiresIn: process.env.JWT_REFRESH_EXPIRY || '7d' }
+    );
+    
+    const accessToken = jwt.sign(
+      { userId: user.id, email: user.email, role: user.role, tokenVersion: user.tokenVersion },
+      process.env.JWT_SECRET!,
+      { expiresIn: process.env.JWT_ACCESS_EXPIRY || '15m' }
+    );
+    
+    return { accessToken, refreshToken: newRefreshToken };
   }
 
   async getCurrentUser(userId: string) {
@@ -390,6 +395,18 @@ export class AuthService {
       activity,
     };
   }
+  private async generateBackupCodes(): Promise<{ codes: string[], hashed: string[] }> {
+    const codes: string[] = [];
+    const hashed: string[] = [];
+    
+    for (let i = 0; i < 10; i++) {
+      const code = crypto.randomBytes(4).toString('hex').toUpperCase();
+      codes.push(code);
+      hashed.push(await bcrypt.hash(code, 12));
+    }
+    
+    return { codes, hashed };
+  }
   async enable2FA(userId: string) {
     const user = await prisma.user.findUnique({
       where: { id: userId },
@@ -408,21 +425,15 @@ export class AuthService {
       name: `JGPNR (${user.email})`,
       issuer: 'JGPNR Admin',
     });
-
-    // Generate backup codes
-    const backupCodes = Array.from({ length: 10 }, () =>
-      crypto.randomBytes(4).toString('hex').toUpperCase()
-    );
-
+    
+    const { codes, hashed } = await this.generateBackupCodes();
     await prisma.user.update({
       where: { id: userId },
       data: {
-        twoFactorSecret: secret.base32,
-        twoFactorBackupCodes: JSON.stringify(backupCodes),
+        twoFactorBackupCodes: JSON.stringify(hashed),
       },
     });
-
-    // Generate QR code
+    
     const qrCode = await QRCode.toDataURL(secret.otpauth_url!);
 
     logger.info(`2FA setup initiated for user: ${user.email}`);
@@ -430,7 +441,7 @@ export class AuthService {
     return {
       secret: secret.base32,
       qrCode,
-      backupCodes,
+      backupCodes: codes,
       message: 'Scan QR code with authenticator app and verify',
     };
   }
@@ -503,6 +514,66 @@ export class AuthService {
       message: '2FA successfully disabled',
       enabled: false,
     };
+  }
+  async requestPasswordReset(email: string) {
+    const user = await prisma.user.findUnique({ where: { email } });
+    if (!user) {
+      // Don't reveal if user exists
+      return { message: 'If account exists, reset email sent' };
+    }
+
+    const resetToken = crypto.randomBytes(32).toString('hex');
+    const hashedToken = await bcrypt.hash(resetToken, 12);
+    
+    await prisma.user.update({
+      where: { id: user.id },
+      data: {
+        resetToken: hashedToken,
+        resetTokenExpiry: new Date(Date.now() + 3600000), // 1 hour
+        tokenVersion: { increment: 1 } // ✅ Invalidate existing sessions
+      }
+    });
+
+    // Send email with resetToken (not hashed version)
+    await emailQueue.add('password-reset', {
+      email: user.email,
+      resetLink: `${process.env.FRONTEND_URL}/reset-password?token=${resetToken}`
+    });
+
+    return { message: 'If account exists, reset email sent' };
+  }
+  async resetPassword(token: string, newPassword: string) {
+    const users = await prisma.user.findMany({
+      where: {
+        resetTokenExpiry: { gt: new Date() }
+      }
+    });
+
+    let matchedUser = null;
+    for (const user of users) {
+      if (user.resetToken && await bcrypt.compare(token, user.resetToken)) {
+        matchedUser = user;
+        break;
+      }
+    }
+
+    if (!matchedUser) {
+      throw new AppError(400, 'Invalid or expired reset token');
+    }
+
+    const hashedPassword = await bcrypt.hash(newPassword, 14);
+    
+    await prisma.user.update({
+      where: { id: matchedUser.id },
+      data: {
+        password: hashedPassword,
+        resetToken: null,
+        resetTokenExpiry: null,
+        tokenVersion: { increment: 1 } // ✅ Invalidate all sessions
+      }
+    });
+
+    return { message: 'Password reset successful' };
   }
 
 }

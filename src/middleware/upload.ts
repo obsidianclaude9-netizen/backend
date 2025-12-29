@@ -32,35 +32,47 @@ const ensureDir = (dir: string) => {
   }
 };
 
-
-const storage = multer.diskStorage({
-  destination: (_req, file, cb) => {
-    let uploadPath = 'uploads/documents';
-    if (file.fieldname === 'avatar') uploadPath = 'uploads/avatars';
-    else if (file.fieldname === 'customerDoc') uploadPath = 'uploads/customer-documents';
-    else if (file.fieldname === 'orderDoc') uploadPath = 'uploads/order-documents';
-
-    try {
-      ensureDir(uploadPath);
-      cb(null, uploadPath);
-    } catch (error) {
-      cb(new Error('Failed to create upload directory'), '');
-    }
-  },
-  filename: (_req, file, cb) => {
-    try {
-      const uniqueSuffix = crypto.randomBytes(16).toString('hex');
-      const ext = path.extname(file.originalname);
-      const sanitizedExt = ext.replace(/[^a-zA-Z0-9.-]/g, '');
-
-      cb(null, `${Date.now()}-${uniqueSuffix}${sanitizedExt}`);
-    } catch (error) {
-      cb(new Error('Failed to generate filename'), '');
-    }
-  },
-});
+const storage = multer.memoryStorage();
 
 
+export const postUploadValidation = async (
+  req: Request, 
+  res: Response, 
+  next: NextFunction
+) => {
+  if (!req.file) return next();
+  
+  // Validate BEFORE writing to disk
+  const isValid = await validateUploadedBuffer(req.file.buffer);
+  
+  if (!isValid) {
+    return res.status(400).json({ error: 'File validation failed' });
+  }
+  
+  // NOW write to disk
+  const finalPath = path.join(uploadsDir, `${Date.now()}-${crypto.randomBytes(16).toString('hex')}`);
+  await fsPromises.writeFile(finalPath, req.file.buffer);
+  req.file.path = finalPath;
+  
+  next();
+};
+async function validateUploadedBuffer(buffer: Buffer): Promise<boolean> {
+  const fileType = await fileTypeFromBuffer(buffer);
+  if (!fileType) return false;
+
+  const allowedTypes = ['jpg', 'png', 'gif', 'webp', 'pdf', 'docx', 'xlsx'];
+  if (!allowedTypes.includes(fileType.ext)) return false;
+
+  // Check for malicious content
+  const content = buffer.toString('utf8', 0, 1024);
+  const dangerousPatterns = [/<script/i, /<\?php/i, /<%/, /#!/];
+  
+  for (const pattern of dangerousPatterns) {
+    if (pattern.test(content)) return false;
+  }
+
+  return true;
+}
 const fileFilter = (
   _req: Request,
   file: Express.Multer.File,

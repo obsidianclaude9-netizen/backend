@@ -4,6 +4,7 @@ import { CustomerService } from './customer.service';
 import { asyncHandler } from '../../middleware/errorHandler';
 import { validateUploadedFile } from '../../middleware/upload';
 import { extractAuditContext } from '../../middleware/audit';
+import { UserRole } from '@prisma/client';
 import {
   CreateCustomerInput,
   UpdateCustomerInput,
@@ -27,9 +28,16 @@ export const listCustomers = asyncHandler(async (req: Request, res: Response) =>
 
 export const getCustomer = asyncHandler(async (req: Request, res: Response) => {
   const { id } = req.params;
+
+  if (req.user.role === UserRole.CUSTOMER) {
+    if (req.user.userId !== id) {
+      throw new AppError(403, 'Access denied');
+    }
+  }
+  
   const customer = await customerService.getCustomer(id);
   res.json(customer);
-});
+}
 
 export const updateCustomer = asyncHandler(async (req: Request, res: Response) => {
   const { id } = req.params;
@@ -89,16 +97,17 @@ export const searchCustomers = asyncHandler(async (req: Request, res: Response) 
 });
 
 export const uploadDocument = asyncHandler(async (req: Request, res: Response) => {
-  const { id } = req.params;
-
   if (!req.file) {
     res.status(400).json({ error: 'No file uploaded' });
     return;
   }
+  const sanitizedName = path.basename(req.file.originalname)
+    .replace(/[^a-zA-Z0-9._-]/g, '_')
+    .substring(0, 100);
+  
+  req.file.originalname = sanitizedName;
 
-  // CRITICAL: Validate file BEFORE processing
   const isValid = await validateUploadedFile(req.file.path);
-
   if (!isValid) {
     res.status(400).json({ error: 'File validation failed' });
     return;
