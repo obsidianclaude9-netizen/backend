@@ -5,10 +5,10 @@ import { PrismaClient, OrderStatus, TicketStatus } from '@prisma/client';
 import { logger } from '../../utils/logger';
 import { AppError } from '../../middleware/errorHandler';
 import redis from '../../config/cache';
-import { emailService } from '../../utils/email.service';
+import { emailQueue } from '../../config/queue'; 
 import { immutableAuditService } from '../../services/immutableAudit.service';
-import { ticketService } from '../tickets/ticket.service';
 import { Request } from 'express';
+import { generateQRCode } from '../../utils/ticket.utils';
 
 const prisma = new PrismaClient();
 
@@ -155,47 +155,40 @@ export class PaymentService {
       throw error;
     }
   }
-
+  private async addJitter(): Promise<void> {
+    const jitter = 100 + Math.floor(Math.random() * 100);
+    await new Promise(resolve => setTimeout(resolve, jitter));
+  }
+  
   private async verifyWebhookSignature(signature: string, req: Request): Promise<void> {
     const rawBody = (req as any).rawBody;
-
     if (!rawBody) {
-      logger.error('Raw body not available for webhook verification');
-      throw new AppError(500, 'Server configuration error: Raw body unavailable');
+      throw new AppError(500, 'Raw body unavailable');
     }
 
-    // Generate expected hash
     const hash = crypto
       .createHmac('sha512', this.paystackSecretKey)
       .update(rawBody)
       .digest('hex');
+    if (signature.length !== hash.length) {
+      await this.addJitter();
+      throw new AppError(401, 'Invalid webhook signature');
+    }
 
-    // Convert to buffers for timing-safe comparison
-    const signatureBuffer = Buffer.from(signature, 'utf8');
-    const hashBuffer = Buffer.from(hash, 'utf8');
+    const signatureBuffer = Buffer.from(signature, 'hex');
+    const hashBuffer = Buffer.from(hash, 'hex');
 
-    // Validate length
     if (signatureBuffer.length !== hashBuffer.length) {
-      logger.warn('Webhook signature length mismatch', {
-        expected: hashBuffer.length,
-        received: signatureBuffer.length
-      });
+      await this.addJitter();
       throw new AppError(401, 'Invalid webhook signature');
     }
-
-    // Timing-safe comparison
     if (!crypto.timingSafeEqual(signatureBuffer, hashBuffer)) {
-      logger.warn('Webhook signature verification failed', {
-        signaturePrefix: signature.substring(0, 10),
-        ipAddress: req.ip
-      });
+      await this.addJitter();
       throw new AppError(401, 'Invalid webhook signature');
     }
 
-    logger.info('Webhook signature verified successfully');
   }
-
-
+  
   private async checkIdempotency(event: string, reference: string): Promise<boolean> {
     const idempotencyKey = `webhook:${event}:${reference}`;
     const status = await redis.get(idempotencyKey);
@@ -220,8 +213,7 @@ export class PaymentService {
     const idempotencyKey = `webhook:${event}:${reference}`;
     const lockKey = `webhook:lock:${event}:${reference}`;
 
-    // Try to acquire lock
-    const lockAcquired = await redis.set(lockKey, '1', 'NX', 'EX', 60); // 60 second lock
+    const lockAcquired = await redis.set(lockKey, '1', 'EX', 60, 'NX'); // 60 second lock
 
     if (!lockAcquired) {
       throw new AppError(409, 'Webhook is already being processed');
@@ -290,10 +282,17 @@ export class PaymentService {
   }
 
   private async handleSuccessfulPayment(data: any, ipAddress?: string) {
+     logger.info('Payment webhook received', {
+      reference: data.reference,
+      amount: data.amount / 100,
+      channel: data.authorization?.channel,
+      ipAddress,
+      timestamp: new Date().toISOString()
+    });
     const reference = data.reference;
 
     return await prisma.$transaction(async (tx) => {
-      // Find the order
+      
       const order = await tx.order.findFirst({
         where: { 
           OR: [
@@ -322,44 +321,38 @@ export class PaymentService {
         };
       }
 
-      // Verify amount
-      const expectedAmount = Math.round(parseFloat(order.amount.toString()) * 100); // Convert to kobo
+      const expectedAmount = Math.round(parseFloat(order.amount.toString()) * 100);
       const paidAmount = data.amount;
 
+      const maxAllowed = Math.ceil(expectedAmount * 1.01);
+
+
       if (paidAmount < expectedAmount) {
-        logger.error('Payment amount mismatch', {
-          reference,
-          expected: expectedAmount,
-          received: paidAmount
-        });
-        throw new AppError(400, 'Payment amount mismatch');
+        await this.logPaymentMismatch(order, expectedAmount, paidAmount, 'underpayment');
+        throw new AppError(400, `Insufficient payment: expected ₦${expectedAmount/100}, received ₦${paidAmount/100}`);
       }
 
-      // Update order
-      const updatedOrder = await tx.order.update({
-        where: { id: order.id },
-        data: {
-          status: OrderStatus.COMPLETED,
-          paymentStatus: 'paid',
-          paidAt: data.paid_at ? new Date(data.paid_at) : new Date(),
-          paidAmount: (paidAmount / 100).toString(),
-          paymentMethod: data.authorization?.channel || 'card',
-          paymentMetadata: JSON.stringify({
-            authorization: data.authorization,
-            fees: data.fees,
-            currency: data.currency,
-            gatewayResponse: data.gateway_response,
-            ipAddress: data.ip_address
-          })
-        }
-      });
-
-      // Activate all tickets
+      if (paidAmount > maxAllowed) {
+        await this.logPaymentMismatch(order, expectedAmount, paidAmount, 'overpayment');
+        throw new AppError(400, `Overpayment detected: expected ₦${expectedAmount/100}, received ₦${paidAmount/100}`);
+      }
+      if (paidAmount !== expectedAmount) {
+        logger.warn('Payment amount variance within tolerance', {
+          orderId: order.id,
+          expected: expectedAmount,
+          received: paidAmount,
+          variance: paidAmount - expectedAmount
+        });
+      }
       const activatedTickets = await Promise.all(
         order.tickets.map(async (ticket) => {
           if (ticket.status === TicketStatus.PENDING) {
-            // Generate QR code
-            const qrCodePath = await ticketService.generateTicketQRCode(ticket.ticketCode);
+            const qrCodePath = await generateQRCode(ticket.ticketCode, {
+              orderId: order.id,
+              customerId: order.customerId,
+              gameSession: ticket.gameSession,
+              validUntil: ticket.validUntil,
+            });
 
             return await tx.ticket.update({
               where: { id: ticket.id },
@@ -370,13 +363,10 @@ export class PaymentService {
             });
           }
           return ticket;
-        })
-      );
+        }));
 
-      // Send confirmation email
       await this.sendPaymentConfirmationEmail(order, data);
 
-      // Log in immutable audit
       await immutableAuditService.createLog({
         userId: order.customerId,
         action: 'PAYMENT_SUCCESS',
@@ -401,7 +391,15 @@ export class PaymentService {
         amount: paidAmount / 100,
         ticketsActivated: activatedTickets.length
       });
-
+      logger.info('Payment processed successfully', {
+        orderId: order.id,
+        orderNumber: order.orderNumber,
+        reference: data.reference,
+        amount: paidAmount / 100,
+        ticketsActivated: activatedTickets.length,
+        processingTime: Date.now(),
+        customerEmail: order.customer.email
+      });
       return {
         message: 'Payment processed successfully',
         orderId: order.id,
@@ -409,6 +407,7 @@ export class PaymentService {
         ticketsActivated: activatedTickets.length
       };
     });
+    
   }
 
   private async handleFailedPayment(data: any, ipAddress?: string) {
@@ -430,23 +429,9 @@ export class PaymentService {
         return { message: 'Order not found', reference };
       }
 
-      // Update order status
-      const updatedOrder = await tx.order.update({
-        where: { id: order.id },
-        data: {
-          paymentStatus: 'failed',
-          paymentMetadata: JSON.stringify({
-            failureReason: data.gateway_response,
-            failedAt: new Date(),
-            ipAddress: data.ip_address
-          })
-        }
-      });
-
-      // Send failure notification
+      
       await this.sendPaymentFailureEmail(order, data);
 
-      // Log in immutable audit
       await immutableAuditService.createLog({
         userId: order.customerId,
         action: 'PAYMENT_FAILED',
@@ -510,27 +495,21 @@ export class PaymentService {
         }
       });
 
-      // Cancel all tickets
       await tx.ticket.updateMany({
         where: { orderId: order.id },
         data: { status: TicketStatus.CANCELLED }
       });
-
-      // Send alert to admin
-      await emailService.sendEmail({
+       await emailQueue.add('payment-dispute-alert', {
         to: process.env.ADMIN_EMAIL || 'admin@jgpnr.com',
         subject: '🚨 Payment Dispute Alert',
-        template: 'payment-dispute',
-        context: {
-          orderNumber: order.orderNumber,
-          reference,
-          amount: order.amount,
-          customerEmail: order.customer.email,
-          reason: data.reason
-        }
+        orderNumber: order.orderNumber,
+        reference,
+        amount: order.amount,
+        customerEmail: order.customer.email,
+        reason: data.reason,
       });
 
-      // Log in immutable audit
+
       await immutableAuditService.createLog({
         userId: order.customerId,
         action: 'PAYMENT_DISPUTED',
@@ -620,15 +599,11 @@ export class PaymentService {
       });
 
       // Send refund confirmation
-      await emailService.sendEmail({
+      await emailQueue.add('refund-confirmation', {
         to: order.customer.email,
-        subject: 'Refund Processed',
-        template: 'refund-confirmation',
-        context: {
-          orderNumber: order.orderNumber,
-          amount: data.amount / 100,
-          customerName: `${order.customer.firstName} ${order.customer.lastName}`
-        }
+        orderNumber: order.orderNumber,
+        amount: data.amount / 100,
+        customerName: `${order.customer.firstName} ${order.customer.lastName}`,
       });
 
       await immutableAuditService.createLog({
@@ -651,41 +626,32 @@ export class PaymentService {
     });
   }
 
-  private async sendPaymentConfirmationEmail(order: any, paymentData: any) {
+ private async sendPaymentConfirmationEmail(order: any, paymentData: any) {
     try {
-      await emailService.sendEmail({
-        to: order.customer.email,
-        subject: '✅ Payment Confirmed - Your Tickets are Ready!',
-        template: 'payment-confirmation',
-        context: {
-          customerName: `${order.customer.firstName} ${order.customer.lastName}`,
-          orderNumber: order.orderNumber,
-          amount: paymentData.amount / 100,
-          ticketCount: order.tickets.length,
-          paymentMethod: paymentData.authorization?.channel,
-          paidAt: paymentData.paid_at,
-          ticketDownloadLink: `${process.env.FRONTEND_URL}/orders/${order.id}/tickets`
-        }
+      await emailQueue.add('payment-confirmation', {
+        orderId: order.id,
+        customerEmail: order.customer.email,
+        customerName: `${order.customer.firstName} ${order.customer.lastName}`,
+        orderNumber: order.orderNumber,
+        amount: paymentData.amount / 100,
+        ticketCount: order.tickets.length,
+        paymentMethod: paymentData.authorization?.channel,
+        paidAt: paymentData.paid_at,
       });
     } catch (error) {
       logger.error('Failed to send payment confirmation email:', error);
-      // Don't throw - email failure shouldn't block webhook processing
     }
   }
 
   private async sendPaymentFailureEmail(order: any, paymentData: any) {
     try {
-      await emailService.sendEmail({
-        to: order.customer.email,
-        subject: '❌ Payment Failed',
-        template: 'payment-failure',
-        context: {
-          customerName: `${order.customer.firstName} ${order.customer.lastName}`,
-          orderNumber: order.orderNumber,
-          amount: paymentData.amount / 100,
-          reason: paymentData.gateway_response,
-          retryLink: `${process.env.FRONTEND_URL}/orders/${order.id}/retry-payment`
-        }
+      await emailQueue.add('payment-failure', {
+        orderId: order.id,
+        customerEmail: order.customer.email,
+        customerName: `${order.customer.firstName} ${order.customer.lastName}`,
+        orderNumber: order.orderNumber,
+        amount: paymentData.amount / 100,
+        reason: paymentData.gateway_response,
       });
     } catch (error) {
       logger.error('Failed to send payment failure email:', error);
@@ -752,7 +718,6 @@ export class PaymentService {
         throw new AppError(500, response.data.message);
       }
 
-      // Update order with payment reference
       await prisma.order.update({
         where: { id: orderId },
         data: {
@@ -801,6 +766,103 @@ export class PaymentService {
     } catch (error) {
       logger.error('Payment verification failed:', error);
       throw new AppError(500, 'Failed to verify payment');
+    }
+  }
+
+  async initiateRefund(orderId: string, amount?: number, reason?: string) {
+    const order = await prisma.order.findUnique({
+      where: { id: orderId },
+      include: { 
+        customer: true,
+        tickets: true,
+        refunds: true
+      }
+    });
+
+    if (!order) {
+      throw new AppError(404, 'Order not found');
+    }
+
+    if (order.status !== OrderStatus.COMPLETED) {
+      const message = process.env.NODE_ENV === 'production'
+        ? 'Refund not available for this order'
+        : `Only completed orders can be refunded (status: ${order.status})`;
+      throw new AppError(400, message);
+    }
+
+    if (!order.paymentReference) {
+      throw new AppError(400, 'No payment reference found for this order');
+    }
+
+    // Check if already fully refunded
+    const totalRefunded = order.refunds
+      .filter(r => r.status === 'COMPLETED')
+      .reduce((sum, r) => sum + parseFloat(r.amount.toString()), 0);
+
+    const orderAmount = parseFloat(order.amount.toString());
+    
+    if (totalRefunded >= orderAmount) {
+      throw new AppError(400, 'Order already fully refunded');
+    }
+
+    // Calculate refund amount
+    const refundAmount = amount || (orderAmount - totalRefunded);
+    
+    if (refundAmount > (orderAmount - totalRefunded)) {
+      throw new AppError(400, 'Refund amount exceeds refundable balance');
+    }
+
+    // Convert to kobo for Paystack
+    const amountInKobo = Math.round(refundAmount * 100);
+
+    try {
+      // Call Paystack refund API
+      const response = await axios.post<PaystackResponse>(
+        `${this.paystackBaseUrl}/refund`,
+        {
+          transaction: order.paymentReference,
+          amount: amountInKobo,
+          currency: 'NGN',
+          customer_note: reason || 'Refund processed',
+          merchant_note: `Order ${order.orderNumber} refund`
+        },
+        {
+          headers: {
+            Authorization: `Bearer ${this.paystackSecretKey}`,
+            'Content-Type': 'application/json'
+          }
+        }
+      );
+
+      if (!response.data.status) {
+        throw new AppError(500, response.data.message || 'Refund initiation failed');
+      }
+
+      logger.info('Refund initiated successfully', {
+        orderId,
+        reference: order.paymentReference,
+        amount: refundAmount,
+        paystackResponse: response.data.data
+      });
+
+      return {
+        success: true,
+        message: 'Refund initiated successfully',
+        refundId: response.data.data.id,
+        amount: refundAmount,
+        status: response.data.data.status
+      };
+
+    } catch (error: any) {
+      logger.error('Paystack refund failed:', {
+        orderId,
+        error: error.response?.data || error.message
+      });
+
+      throw new AppError(
+        500, 
+        error.response?.data?.message || 'Failed to process refund with payment gateway'
+      );
     }
   }
 }

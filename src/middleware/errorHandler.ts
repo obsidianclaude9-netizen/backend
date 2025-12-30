@@ -19,9 +19,11 @@ export const errorHandler = (
   res: Response,
   _next: NextFunction
 ) => {
+  const requestId = req.headers['x-request-id'] as string;
   logger.error('Error occurred:', {
+    requestId,
     error: err.message,
-    stack: process.env.NODE_ENV === 'development' ? err.stack : undefined,
+    stack: err.stack, 
     path: req.path,
     method: req.method,
     userId: req.user?.userId,
@@ -30,16 +32,15 @@ export const errorHandler = (
   if (err instanceof AppError) {
     return res.status(err.statusCode).json({
       error: err.message,
+      requestId,
     });
   }
-
   const message = process.env.NODE_ENV === 'production'
     ? 'An error occurred'
     : err.message;
     
-  return res.status(500).json({ error: message });
+  return res.status(500).json({ error: message, requestId  });
 };
-
 export const notFoundHandler = (
   req: Request,
   res: Response,

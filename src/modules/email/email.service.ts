@@ -11,23 +11,60 @@ import {
   SendEmailInput,
   CreateCampaignInput,
 } from './email.schema';
-import DOMPurify from 'dompurify';
-import { JSDOM } from 'jsdom';
-
-const window = new JSDOM('').window;
-const purify = DOMPurify(window as any);
+import sanitizeHtml from 'sanitize-html';
 
 export class EmailService {
+ 
   private sanitizeHTML(html: string): string {
-    return purify.sanitize(html, {
-      ALLOWED_TAGS: ['p', 'br', 'strong', 'em', 'u', 'a', 'h1', 'h2', 'h3', 'ul', 'ol', 'li', 'span', 'div'],
-      ALLOWED_ATTR: ['href', 'target', 'style', 'class'],
+    return sanitizeHtml(html, {
+      allowedTags: [
+        'p', 'br', 'strong', 'em', 'u', 'a', 
+        'h1', 'h2', 'h3', 'ul', 'ol', 'li', 'span'
+      ],
+
+      allowedAttributes: {
+        'a': ['href', 'target', 'rel'],
+        'span': ['style'], 
+      },
+
+      allowedSchemes: ['http', 'https', 'mailto'],
+      allowedSchemesByTag: {
+        'a': ['http', 'https', 'mailto']
+      },
+      allowedStyles: {
+        'span': {
+          'color': [/^#[0-9a-f]{6}$/i], // Only hex colors
+          'font-weight': [/^(bold|normal|[1-9]00)$/],
+          'font-style': [/^(italic|normal)$/],
+          'text-decoration': [/^(underline|none)$/]
+        }
+      },
+      transformTags: {
+        'a': (tagName, attribs) => {
+          return {
+            tagName: tagName,
+            attribs: {
+              href: attribs.href,
+              rel: 'noopener noreferrer nofollow', 
+              target: '_blank'
+            }
+          };
+        }
+      },
+      enforceHtmlBoundary: true,
+      exclusiveFilter: (frame) => {
+        const href = frame.attribs.href;
+        if (href && /^javascript:/i.test(href)) {
+          return true; 
+        }
+        if (href && /^data:/i.test(href)) {
+          return true; 
+        }
+        return false;
+      }
     });
   }
 
-  /**
-   * Create email template
-   */
   async createTemplate(data: CreateTemplateInput) {
     const sanitizedBody = this.sanitizeHTML(data.body);
 

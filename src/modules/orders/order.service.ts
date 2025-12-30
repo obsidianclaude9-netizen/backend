@@ -43,25 +43,12 @@ function generateSecureCode(length: number, charset: string): string {
 }
 
 export class OrderService {
-  private orderCounter: number = 0;
   private readonly qrCodeDir = path.join(process.cwd(), 'uploads', 'qrcodes');
 
   constructor() {
     this.ensureQRDirectory();
-    this.initializeOrderCounter();
   }
 
-  private async initializeOrderCounter() {
-    const latestOrder = await prisma.order.findFirst({
-      orderBy: { createdAt: 'desc' },
-      select: { orderNumber: true }
-    });
-    
-    if (latestOrder) {
-      const match = latestOrder.orderNumber.match(/-(\d+)-/);
-      this.orderCounter = match ? parseInt(match[1]) + 1 : 0;
-    }
-  }
 
   private async ensureQRDirectory() {
     try {
@@ -71,13 +58,18 @@ export class OrderService {
     }
   }
 
- private generateOrderNumber(): string {
-  
-    const hrTime = process.hrtime.bigint().toString(36).toUpperCase();
-    const random = crypto.randomBytes(8).toString('hex').toUpperCase(); // More bytes
-    const counter = this.orderCounter++; // Add in-memory counter
+  private generateOrderNumber(): string {
+
+    const randomBytes = crypto.randomBytes(16);
+    const base32Chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+    let encoded = '';
     
-    return `ORD-${hrTime}-${counter.toString(36).toUpperCase()}-${random}`;
+    for (let i = 0; i < randomBytes.length; i++) {
+      encoded += base32Chars[randomBytes[i] % base32Chars.length];
+    }
+    const chunks = encoded.match(/.{1,4}/g) || [];
+    return `ORD-${chunks.join('-')}`;
+    
   }
 
   private generateTicketCode(): string {
@@ -95,7 +87,7 @@ export class OrderService {
     });
 
     try {
-      // Validate customer exists
+      
       const customer = await prisma.customer.findUnique({
         where: { id: data.customerId },
       });
@@ -104,15 +96,12 @@ export class OrderService {
         throw new AppError(404, 'Customer not found');
       }
 
-      // Get geolocation if IP provided
       const location = ipAddress 
         ? await geolocationService.getLocation(ipAddress)
         : null;
 
-      // Get ticket settings
       const settings = await ticketService.getSettings();
 
-      // Create order with retry logic OUTSIDE transaction
       let order;
       let attempts = 0;
       const maxAttempts = 3;
@@ -122,7 +111,14 @@ export class OrderService {
           const orderNumber = this.generateOrderNumber();
 
           order = await prisma.$transaction(async (tx) => {
-            // Create the order
+          const exists = await prisma.order.findUnique({
+            where: { orderNumber },
+            select: { id: true }
+          });
+          if (exists) {
+            throw { code: 'P2002' }; 
+          }
+          
             const newOrder = await tx.order.create({
               data: {
                 orderNumber,
@@ -138,7 +134,7 @@ export class OrderService {
               },
             });
 
-            // Create tickets for this order
+          
             const tickets = [];
             
             for (let i = 0; i < data.quantity; i++) {
@@ -153,7 +149,7 @@ export class OrderService {
                   validUntil,
                   maxScans: settings.maxScanCount,
                   scanWindow: settings.scanWindowDays,
-                  status: TicketStatus.PENDING, // Pending until payment
+                  status: TicketStatus.PENDING, 
                 },
               });
 
@@ -162,17 +158,15 @@ export class OrderService {
 
             return { ...newOrder, tickets };
           }, {
-            timeout: 10000, // 10 second timeout
+            timeout: 10000,
             isolationLevel: 'Serializable'
           });
 
-          // Success - break the retry loop
           break;
 
         } catch (error: any) {
           attempts++;
 
-          // If unique constraint violation, retry with exponential backoff
           if (error.code === 'P2002' && attempts < maxAttempts) {
             const backoffMs = Math.pow(2, attempts) * 100;
             logger.warn(`Order number collision, retrying in ${backoffMs}ms (attempt ${attempts}/${maxAttempts})`);
@@ -180,7 +174,6 @@ export class OrderService {
             continue;
           }
 
-          // If max attempts reached or different error, throw
           throw error.code === 'P2002'
             ? new AppError(500, 'Failed to generate unique order number after multiple attempts')
             : error;
@@ -191,14 +184,12 @@ export class OrderService {
         throw new AppError(500, 'Order creation failed');
       }
 
-      // Invalidate relevant caches
       await Promise.all([
         invalidateCache('api:/analytics/*'),
         invalidateCache('api:/orders*'),
         invalidateCache(`api:/customers/${customer.id}*`)
       ]);
 
-      // Queue confirmation email
       await emailQueue.add('order-confirmation', {
         orderId: order.id,
         customerEmail: customer.email,
@@ -631,7 +622,255 @@ export class OrderService {
       revenue: totalRevenue._sum.amount || 0,
     };
   }
+  // Add to src/modules/orders/order.service.ts
 
+  async refundOrder(
+    orderId: string,
+    data: { amount?: number; reason: string; reasonDetails: string },
+    userId?: string,
+    ipAddress?: string
+  ) {
+    const start = Date.now();
+
+    try {
+      const order = await prisma.order.findUnique({
+        where: { id: orderId },
+        include: {
+          customer: true,
+          tickets: true,
+          refunds: {
+            where: { status: { in: ['COMPLETED', 'PROCESSING'] } }
+          }
+        }
+      });
+
+      if (!order) {
+        throw new AppError(404, 'Order not found');
+      }
+
+      if (order.status !== OrderStatus.COMPLETED) {
+        throw new AppError(400, 'Only completed orders can be refunded');
+      }
+
+      if (!order.paidAt) {
+        throw new AppError(400, 'Order payment not confirmed');
+      }
+
+      // Check refund window (e.g., 30 days)
+      const daysSincePurchase = Math.floor(
+        (Date.now() - order.paidAt.getTime()) / (1000 * 60 * 60 * 24)
+      );
+      
+      if (daysSincePurchase > 30 && data.reason !== 'FRAUD') {
+        throw new AppError(400, 'Refund window has expired (30 days)');
+      }
+
+      // Calculate refundable amount
+      const orderAmount = parseFloat(order.amount.toString());
+      const totalRefunded = order.refunds.reduce(
+        (sum, r) => sum + parseFloat(r.amount.toString()),
+        0
+      );
+      const refundableAmount = orderAmount - totalRefunded;
+
+      if (refundableAmount <= 0) {
+        throw new AppError(400, 'Order already fully refunded');
+      }
+
+      const refundAmount = data.amount || refundableAmount;
+
+      if (refundAmount > refundableAmount) {
+        throw new AppError(400, `Maximum refundable amount is ${refundableAmount}`);
+      }
+
+      // Check if tickets have been used
+      const usedTickets = order.tickets.filter(t => t.scanCount > 0);
+      if (usedTickets.length > 0 && data.reason === 'CUSTOMER_REQUEST') {
+        throw new AppError(
+          400,
+          `Cannot refund: ${usedTickets.length} ticket(s) already used`
+        );
+      }
+
+      // Create refund record and process
+      const result = await prisma.$transaction(async (tx) => {
+        // Create refund record
+        const refund = await tx.refund.create({
+          data: {
+            orderId: order.id,
+            amount: refundAmount,
+            reason: data.reason as any,
+            reasonDetails: data.reasonDetails,
+            status: 'PROCESSING',
+            initiatedBy: userId,
+          }
+        });
+
+        // Import payment service
+        const { paymentService } = await import('../payment/payment.service');
+
+        // Initiate refund with payment gateway
+        let gatewayResult;
+        try {
+          gatewayResult = await paymentService.initiateRefund(
+            orderId,
+            refundAmount,
+            data.reasonDetails
+          );
+
+          // Update refund with gateway response
+          await tx.refund.update({
+            where: { id: refund.id },
+            data: {
+              status: 'COMPLETED',
+              refundReference: gatewayResult.refundId?.toString(),
+              processedAt: new Date(),
+              gatewayResponse: gatewayResult as any
+            }
+          });
+
+        } catch (error: any) {
+          // Mark refund as failed
+          await tx.refund.update({
+            where: { id: refund.id },
+            data: {
+              status: 'FAILED',
+              failureReason: error.message
+            }
+          });
+
+          throw error;
+        }
+
+        // Check if full refund
+        const isFullRefund = refundAmount >= orderAmount;
+
+        if (isFullRefund) {
+          // Update order status
+          await tx.order.update({
+            where: { id: orderId },
+            data: {
+              status: OrderStatus.CANCELLED,
+              paymentStatus: 'refunded',
+              paymentMetadata: {
+                refunded: true,
+                refundedAt: new Date(),
+                refundAmount: refundAmount,
+                refundReason: data.reason
+              } as any
+            }
+          });
+
+          // Cancel all tickets
+          await tx.ticket.updateMany({
+            where: { orderId: order.id },
+            data: { status: TicketStatus.CANCELLED }
+          });
+
+          // Update customer stats
+          await tx.customer.update({
+            where: { id: order.customerId },
+            data: {
+              totalOrders: { decrement: 1 },
+              totalSpent: { decrement: orderAmount }
+            }
+          });
+        } else {
+          // Partial refund - update metadata only
+          await tx.order.update({
+            where: { id: orderId },
+            data: {
+              paymentMetadata: {
+                partiallyRefunded: true,
+                totalRefunded: totalRefunded + refundAmount,
+                refunds: [...(order.paymentMetadata as any)?.refunds || [], {
+                  amount: refundAmount,
+                  reason: data.reason,
+                  processedAt: new Date()
+                }]
+              } as any
+            }
+          });
+        }
+
+        return { refund, gatewayResult, isFullRefund };
+      });
+
+      // Send refund confirmation email
+      await emailQueue.add('refund-confirmation', {
+        orderId: order.id,
+        customerEmail: order.customer.email,
+        customerName: `${order.customer.firstName} ${order.customer.lastName}`,
+        orderNumber: order.orderNumber,
+        refundAmount,
+        isFullRefund: result.isFullRefund,
+        reason: data.reasonDetails
+      });
+
+      // Notify admins
+      await emailQueue.add('refund-notification-admin', {
+        to: process.env.ADMIN_EMAIL || 'admin@jgpnr.com',
+        orderNumber: order.orderNumber,
+        customerName: `${order.customer.firstName} ${order.customer.lastName}`,
+        refundAmount,
+        reason: data.reason,
+        reasonDetails: data.reasonDetails,
+        initiatedBy: userId
+      });
+
+      // Log in immutable audit
+      await immutableAuditService.createLog({
+        userId,
+        action: 'ORDER_REFUNDED',
+        entity: 'ORDER',
+        entityId: orderId,
+        ipAddress,
+        metadata: {
+          orderNumber: order.orderNumber,
+          refundId: result.refund.id,
+          amount: refundAmount,
+          isFullRefund: result.isFullRefund,
+          reason: data.reason,
+          reasonDetails: data.reasonDetails,
+          customerId: order.customerId,
+          ticketsCancelled: result.isFullRefund ? order.tickets.length : 0
+        }
+      });
+
+      logger.info('Order refunded successfully', {
+        orderId,
+        refundId: result.refund.id,
+        amount: refundAmount,
+        processingTime: Date.now() - start
+      });
+
+      // Invalidate caches
+      await Promise.all([
+        invalidateCache(`api:/orders/${orderId}*`),
+        invalidateCache('api:/analytics/*'),
+        invalidateCache(`api:/customers/${order.customerId}*`)
+      ]);
+
+      return {
+        message: 'Refund processed successfully',
+        refund: result.refund,
+        isFullRefund: result.isFullRefund,
+        refundAmount,
+        order: {
+          id: order.id,
+          orderNumber: order.orderNumber,
+          status: result.isFullRefund ? OrderStatus.CANCELLED : order.status
+        }
+      };
+
+    } catch (error) {
+      monitoring.captureException(error as Error, {
+        operation: 'refundOrder',
+        orderId
+      });
+      throw error;
+    }
+  }
   private async generateQRForTicket(ticket: any, order: any): Promise<string> {
     try {
       await this.ensureQRDirectory();
@@ -696,7 +935,12 @@ export class OrderService {
       const algorithm = 'aes-256-gcm';
       const key = Buffer.from(process.env.QR_ENCRYPTION_KEY!, 'hex');
       
-      const [ivHex, authTagHex, encrypted] = encryptedData.split(':');
+      const parts = encryptedData.split(':');
+      if (parts.length !== 3) {
+        throw new Error('FORMAT'); 
+      }
+
+      const [ivHex, authTagHex, encrypted] = parts;
       
       const iv = Buffer.from(ivHex, 'hex');
       const authTag = Buffer.from(authTagHex, 'hex');
@@ -708,9 +952,13 @@ export class OrderService {
       decrypted += decipher.final('utf8');
 
       return decrypted;
-    } catch (error) {
-      logger.error('QR decryption failed:', error);
-      throw new AppError(400, 'Invalid QR code');
+    } catch (error: any) {
+      const errorCode = error.message || 'UNKNOWN';
+      logger.warn('QR decryption failed', { 
+        errorCode,
+        timestamp: Date.now()
+      });
+      throw new AppError(400, 'Invalid or tampered QR code');
     }
   }
 

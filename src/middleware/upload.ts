@@ -38,8 +38,19 @@ const storage = multer.diskStorage({
     cb(null, uploadsDir);
   },
   filename: (_req, file, cb) => {
-    const sanitized = path.basename(file.originalname).replace(/[^a-zA-Z0-9._-]/g, '_');
-    cb(null, `${Date.now()}-${sanitized}`);
+
+    const ext = path.extname(file.originalname).toLowerCase();
+    if (!ALLOWED_EXTENSIONS.includes(ext)) {
+      return cb(new Error('Invalid file extension'),'');
+    }
+    const randomName = crypto.randomBytes(16).toString('hex');
+    const safeFilename = `${Date.now()}-${randomName}${ext}`;
+    
+    if (safeFilename !== path.basename(safeFilename)) {
+      return cb(new Error('Invalid filename detected'),'');
+    }
+    
+    cb(null, safeFilename);
   }
 });
 
@@ -81,29 +92,47 @@ async function validateUploadedBuffer(buffer: Buffer): Promise<boolean> {
 
   return true;
 }
+
 const fileFilter = (
   _req: Request,
   file: Express.Multer.File,
   cb: multer.FileFilterCallback
 ) => {
   try {
+    if (file.originalname.includes('..')) {
+      return cb(new Error('Path traversal detected'));
+    }
+    
+    if (file.originalname.includes('/') || file.originalname.includes('\\')) {
+      return cb(new Error('Directory separators not allowed'));
+    }
+    
+    if (file.originalname.includes('\0')) {
+      return cb(new Error('Null bytes not allowed'));
+    }
+    
+    const normalized = path.normalize(file.originalname);
+    const basename = path.basename(normalized);
+    
+    if (normalized !== basename) {
+      return cb(new Error('Invalid filename structure'));
+    }
     
     const ext = path.extname(file.originalname).toLowerCase();
     if (!ALLOWED_EXTENSIONS.includes(ext)) {
       return cb(new Error(`File extension ${ext} not allowed`));
     }
+    
     if (!ALLOWED_MIME_TYPES.includes(file.mimetype)) {
       return cb(new Error(`MIME type ${file.mimetype} not allowed`));
     }
 
-    const basename = path.basename(file.originalname);
-    if (basename !== file.originalname) {
-      return cb(new Error('Invalid filename: path traversal detected'));
-    }
-
-    const nameParts = file.originalname.split('.');
-    if (nameParts.length > 2) {
+    const parts = file.originalname.split('.');
+    if (parts.length > 2) {
       return cb(new Error('Multiple file extensions not allowed'));
+    }
+    if (file.originalname.length > 255) {
+      return cb(new Error('Filename too long (max 255 chars)'));
     }
 
     cb(null, true);
