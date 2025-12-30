@@ -324,17 +324,25 @@ export class PaymentService {
       const expectedAmount = Math.round(parseFloat(order.amount.toString()) * 100);
       const paidAmount = data.amount;
 
-      const maxAllowed = Math.ceil(expectedAmount * 1.01);
+      const PAYMENT_TOLERANCE_KOBO = 100; 
+
+      const minAllowed = expectedAmount - PAYMENT_TOLERANCE_KOBO;
+      const maxAllowed = expectedAmount + PAYMENT_TOLERANCE_KOBO;
 
 
-      if (paidAmount < expectedAmount) {
+      if (paidAmount < minAllowed) {
         await this.logPaymentMismatch(order, expectedAmount, paidAmount, 'underpayment');
         throw new AppError(400, `Insufficient payment: expected ₦${expectedAmount/100}, received ₦${paidAmount/100}`);
       }
 
       if (paidAmount > maxAllowed) {
         await this.logPaymentMismatch(order, expectedAmount, paidAmount, 'overpayment');
-        throw new AppError(400, `Overpayment detected: expected ₦${expectedAmount/100}, received ₦${paidAmount/100}`);
+        logger.warn('Customer overpaid', {
+          orderId: order.id,
+          expected: expectedAmount/100,
+          received: paidAmount/100,
+          excess: (paidAmount - expectedAmount)/100
+        });
       }
       if (paidAmount !== expectedAmount) {
         logger.warn('Payment amount variance within tolerance', {
@@ -625,7 +633,59 @@ export class PaymentService {
       };
     });
   }
+ 
+  private async logPaymentMismatch(
+    order: any,
+    expectedAmount: number,
+    paidAmount: number,
+    type: 'underpayment' | 'overpayment'
+  ): Promise<void> {
+    const variance = Math.abs(paidAmount - expectedAmount);
+    const variancePercent = ((variance / expectedAmount) * 100).toFixed(2);
 
+    logger.error(`Payment amount mismatch detected: ${type}`, {
+      orderId: order.id,
+      orderNumber: order.orderNumber,
+      expectedAmount: expectedAmount / 100,
+      paidAmount: paidAmount / 100,
+      variance: variance / 100,
+      variancePercent: `${variancePercent}%`,
+      customerEmail: order.customer.email,
+      customerId: order.customerId,
+      type,
+    });
+
+    // Send alert to admins
+    await emailQueue.add('payment-mismatch-alert', {
+      to: process.env.ADMIN_EMAIL || 'admin@jgpnr.com',
+      subject: `🚨 Payment Mismatch: ${type.toUpperCase()}`,
+      orderId: order.id,
+      orderNumber: order.orderNumber,
+      expectedAmount: expectedAmount / 100,
+      paidAmount: paidAmount / 100,
+      variance: variance / 100,
+      variancePercent,
+      customerEmail: order.customer.email,
+      type,
+    });
+
+    // Create audit log
+    await immutableAuditService.createLog({
+      userId: order.customerId,
+      action: 'PAYMENT_AMOUNT_MISMATCH',
+      entity: 'PAYMENT',
+      entityId: order.id,
+      metadata: {
+        type,
+        orderNumber: order.orderNumber,
+        expectedAmount: expectedAmount / 100,
+        paidAmount: paidAmount / 100,
+        variance: variance / 100,
+        variancePercent,
+      },
+      success: false,
+    });
+  }
  private async sendPaymentConfirmationEmail(order: any, paymentData: any) {
     try {
       await emailQueue.add('payment-confirmation', {

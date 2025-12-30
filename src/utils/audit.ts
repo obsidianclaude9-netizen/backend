@@ -51,6 +51,8 @@ export enum AuditAction {
   PAYMENT_SUCCESS = 'PAYMENT_SUCCESS',
   PAYMENT_FAILED = 'PAYMENT_FAILED',
   PAYMENT_REFUNDED = 'PAYMENT_REFUNDED',
+  PAYMENT_DISPUTED = 'PAYMENT_DISPUTED',   
+  REFUND_PROCESSED = 'REFUND_PROCESSED',
   PAYMENT_WEBHOOK_RECEIVED = 'PAYMENT_WEBHOOK_RECEIVED',
   
   // Campaign Management
@@ -428,7 +430,7 @@ export class AuditLogger {
 
     return logs;
   }
-  
+
   static async cleanupOldLogs(daysToKeep: number = 90): Promise<number> {
     const cutoffDate = new Date();
     cutoffDate.setDate(cutoffDate.getDate() - daysToKeep);
@@ -451,7 +453,6 @@ export class AuditLogger {
       AuditAction.DATA_EXPORT,
       AuditAction.BULK_OPERATION,
     ];
-
     const sevenYearsAgo = new Date();
     sevenYearsAgo.setFullYear(sevenYearsAgo.getFullYear() - 7);
 

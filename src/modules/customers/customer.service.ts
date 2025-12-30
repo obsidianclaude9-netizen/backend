@@ -5,6 +5,7 @@ import { AppError } from '../../middleware/errorHandler';
 import { logger } from '../../utils/logger';
 import { promises as fs } from 'fs';
 import path from 'path';
+import { encryptFile, decryptFile } from '../../utils/file-encryption';
 import {
   CreateCustomerInput,
   UpdateCustomerInput,
@@ -504,8 +505,10 @@ export class CustomerService {
         logger.warn(`Failed to delete old document:`, error);
       }
     }
-
-    const relativePath = file.path.replace(/\\/g, '/');
+    
+    await encryptFile(file.path);
+  
+    const relativePath = (file.path + '.enc').replace(/\\/g, '/');
     
     const updated = await prisma.customer.update({
       where: { id: customerId },
@@ -608,13 +611,17 @@ export class CustomerService {
     }
 
     const fullPath = path.join(process.cwd(), customer.documentPath);
-
+    const encryptedPath = path.join(process.cwd(), customer.documentPath);
     // Check if file exists
     try {
       await fs.access(fullPath);
     } catch {
       throw new AppError(404, 'Document file not found on disk');
     }
+    const decrypted = await decryptFile(encryptedPath);
+    const tempPath = path.join(process.cwd(), 'uploads/temp', `${customerId}-${Date.now()}`);
+    await fs.writeFile(tempPath, decrypted);
+
 
     // ✅ Audit document access
     await AuditLogger.log({
@@ -633,6 +640,10 @@ export class CustomerService {
     return {
       path: fullPath,
       name: customer.documentName || 'document',
+      cleanup: async () => {
+        // Delete temp file after download
+        await fs.unlink(tempPath);
+      }
     };
   }
 }

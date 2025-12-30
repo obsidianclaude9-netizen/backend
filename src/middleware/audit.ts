@@ -20,7 +20,7 @@ export const extractAuditContext = (req: Request): AuditContext => {
  */
 export const auditLog = (action: string, entity: string) => {
   return async (req: Request, res: Response, next: NextFunction) => {
-    // Store original send
+    
     const originalSend = res.send;
 
     res.send = function (data: any) {

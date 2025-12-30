@@ -42,7 +42,12 @@ validateEncryptionKey();
 
 
 const IV_LENGTH = 16;
-const ENCRYPTION_KEY = Buffer.from(process.env.QR_ENCRYPTION_KEY!, 'hex');
+const ENCRYPTION_KEYS = [
+  { id: 'v1', key: Buffer.from(process.env.QR_ENCRYPTION_KEY!, 'hex') },
+  
+  { id: 'v2', key: Buffer.from(process.env.QR_ENCRYPTION_KEY_V2!, 'hex') },
+];
+const CURRENT_KEY = ENCRYPTION_KEYS[ENCRYPTION_KEYS.length - 1];
 const ALGORITHM = 'aes-256-cbc';
 
 
@@ -52,46 +57,40 @@ export const generateTicketCode = (): string => {
   const random = crypto.randomBytes(3).toString('hex').toUpperCase();
   return `JGPNR-${year}-${random}`;
 };
-
 export const encryptTicketData = (data: string): string => {
-  try {
-    const iv = crypto.randomBytes(IV_LENGTH);
-    const cipher = crypto.createCipheriv(ALGORITHM, ENCRYPTION_KEY, iv);
-    
-    let encrypted = cipher.update(data, 'utf8', 'hex');
-    encrypted += cipher.final('hex');
-    
-    return iv.toString('hex') + ':' + encrypted;
-  } catch (error) {
-    logger.error('Encryption failed:', error);
-    throw new Error('Failed to encrypt ticket data');
-  }
+  const iv = crypto.randomBytes(IV_LENGTH);
+  const cipher = crypto.createCipheriv(ALGORITHM, CURRENT_KEY.key, iv);
+  
+  let encrypted = cipher.update(data, 'utf8', 'hex');
+  encrypted += cipher.final('hex');
+  
+  return CURRENT_KEY.id + ':' + iv.toString('hex') + ':' + encrypted;
 };
-
 export const decryptTicketData = (encryptedData: string): string => {
-  try {
-    const parts = encryptedData.split(':');
-    if (parts.length !== 2) {
-      throw new Error('Invalid encrypted data format');
-    }
-
-    const [ivHex, encrypted] = parts;
-    const iv = Buffer.from(ivHex, 'hex');
-    
-    if (iv.length !== IV_LENGTH) {
-      throw new Error('Invalid IV length');
-    }
-
-    const decipher = crypto.createDecipheriv(ALGORITHM, ENCRYPTION_KEY, iv);
-    
-    let decrypted = decipher.update(encrypted, 'hex', 'utf8');
-    decrypted += decipher.final('utf8');
-    
-    return decrypted;
-  } catch (error) {
-    logger.error('Decryption failed:', error);
-    throw new Error('Failed to decrypt ticket data');
+  const parts = encryptedData.split(':');
+  
+  let keyId: string, ivHex: string, encrypted: string;
+  
+  if (parts.length === 2) {
+    keyId = 'v1';
+    [ivHex, encrypted] = parts;
+  } else if (parts.length === 3) {
+    [keyId, ivHex, encrypted] = parts;
+  } else {
+    throw new Error('Invalid encrypted data format');
   }
+  const keyEntry = ENCRYPTION_KEYS.find(k => k.id === keyId);
+  if (!keyEntry) {
+    throw new Error('Unknown encryption key version');
+  }
+  
+  const iv = Buffer.from(ivHex, 'hex');
+  const decipher = crypto.createDecipheriv(ALGORITHM, keyEntry.key, iv);
+  
+  let decrypted = decipher.update(encrypted, 'hex', 'utf8');
+  decrypted += decipher.final('utf8');
+  
+  return decrypted;
 };
 
 export const generateQRCode = async (

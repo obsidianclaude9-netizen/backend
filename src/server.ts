@@ -14,6 +14,7 @@ import { reportWorker, initializeScheduler } from './jobs/scheduler.jobs';
 import { analyticsWorker, initializeAnalyticsJobs } from './jobs/analytics.jobs';
 import { scheduleViewRefresh } from './jobs/view-refresh.job';
 import cron from 'node-cron';
+import { validateSecrets } from './config/startup-checks';
 
 const PORT = process.env.PORT || 5000;
 
@@ -39,11 +40,11 @@ if (missingEnvVars.length > 0) {
 }
 
 const startServer = async () => {
+  validateSecrets();
   try {
     initializeSentry(app);
     logger.info('Sentry initialized');
 
-    // Initialize local file storage
     initializeStorage();
 
     await prisma.$connect();
@@ -119,45 +120,10 @@ const startServer = async () => {
   }
 };
 
-const validateSecrets = () => {
-  const secrets = {
-    JWT_SECRET: process.env.JWT_SECRET,
-    JWT_REFRESH_SECRET: process.env.JWT_REFRESH_SECRET,
-    QR_ENCRYPTION_KEY: process.env.QR_ENCRYPTION_KEY,
-  };
-
-  for (const [name, value] of Object.entries(secrets)) {
-    if (!value) {
-      logger.error(`Missing required secret: ${name}`);
-      process.exit(1);
-    }
-
-    // ✅ Validate length
-    if (value.length < 32) {
-      logger.error(`Secret ${name} too short (minimum 32 characters)`);
-      process.exit(1);
-    }
-
-    // ✅ Validate entropy
-    const uniqueChars = new Set(value.split('')).size;
-    if (uniqueChars < 16) {
-      logger.error(`Secret ${name} has insufficient entropy`);
-      process.exit(1);
-    }
-
-    // ✅ Warn if weak
-    if (/^[a-z0-9]+$/i.test(value)) {
-      logger.warn(`Secret ${name} should contain special characters`);
-    }
-  }
-
-  logger.info('All secrets validated');
-};
 
 const validateEnvironment = () => {
   const errors: string[] = [];
   
-  // Required variables
   const required = [
     'DATABASE_URL', 'JWT_SECRET', 'JWT_REFRESH_SECRET',
     'SMTP_HOST', 'SMTP_USER', 'SMTP_PASSWORD',
@@ -170,7 +136,6 @@ const validateEnvironment = () => {
     }
   }
   
-  // Validate JWT secrets (min 32 chars, high entropy)
   const secrets = ['JWT_SECRET', 'JWT_REFRESH_SECRET'];
   for (const secret of secrets) {
     const value = process.env[secret];

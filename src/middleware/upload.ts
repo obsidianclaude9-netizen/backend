@@ -8,6 +8,9 @@ import { fileTypeFromBuffer } from 'file-type';
 import { logger } from '../utils/logger';
 import { promises as fsPromises } from 'fs';
 import { Response, NextFunction } from 'express';
+import clamscan from 'clamscan';
+
+
 const ALLOWED_EXTENSIONS = [
   '.jpg', '.jpeg', '.png', '.gif', '.webp',
   '.pdf', '.doc', '.docx', '.xls', '.xlsx',
@@ -54,7 +57,13 @@ const storage = multer.diskStorage({
   }
 });
 
-
+const clamScanner = new clamscan({
+  clamdscan: {
+    host: process.env.CLAMAV_HOST || 'localhost',
+    port: process.env.CLAMAV_PORT || 3310,
+  },
+  preference: 'clamdscan', 
+});
 
 export const postUploadValidation = async (
   req: Request, 
@@ -149,7 +158,28 @@ export const upload = multer({
     files: MAX_FILES,
   },
 });
-
+export const scanFileForViruses = async (filepath: string): Promise<boolean> => {
+  try {
+    const { isInfected, viruses } = await clamScanner.scanFile(filepath);
+    
+    if (isInfected) {
+      logger.error('Virus detected in uploaded file', {
+        filepath,
+        viruses,
+      });
+      
+      await fsPromises.unlink(filepath);
+      
+      return false;
+    }
+    
+    return true;
+  } catch (error) {
+    logger.error('Virus scan failed', { filepath, error });
+    
+    return false;
+  }
+};
 export const validateUploadedFile = async (filepath: string): Promise<boolean> => {
   try {
     const buffer = await fsPromises.readFile(filepath);
@@ -190,7 +220,11 @@ export const validateUploadedFile = async (filepath: string): Promise<boolean> =
         return false;
       }
     }
-
+     const isClean = await scanFileForViruses(filepath);
+      if (!isClean) {
+        logger.warn('File failed virus scan', { filepath });
+        return false;
+      }
     return true;
   } catch (error) {
     logger.error('File validation error:', error);

@@ -83,16 +83,25 @@ export const apiLimiter: RateLimitRequestHandler = rateLimit({
 const getClientIdentifier = (req: Request): string => {
   const identifiers: string[] = [];
   
-  const realIp = req.socket.remoteAddress || 'unknown';
-  identifiers.push(realIp);
-  
-  const fingerprint = req.headers['x-client-fingerprint'] as string;
-  if (fingerprint && /^[a-f0-9]{32}$/.test(fingerprint)) {
-    identifiers.push(fingerprint);
+  const forwardedFor = req.headers['x-forwarded-for'];
+  if (forwardedFor) {
+    const clientIp = Array.isArray(forwardedFor) 
+      ? forwardedFor[0] 
+      : forwardedFor.split(',')[0].trim();
+    identifiers.push(clientIp);
+  } else {
+    const realIp = req.socket.remoteAddress || 'unknown';
+    identifiers.push(realIp);
   }
+  
+  const email = req.body?.email;
+  if (email && typeof email === 'string') {
+    identifiers.push(email.toLowerCase().trim());
+  }
+  
   const ua = req.headers['user-agent'];
   if (ua) {
-    const uaHash = crypto.createHash('sha256').update(ua).digest('hex').substring(0, 8);
+    const uaHash = crypto.createHash('sha256').update(ua).digest('hex').substring(0, 16);
     identifiers.push(uaHash);
   }
   

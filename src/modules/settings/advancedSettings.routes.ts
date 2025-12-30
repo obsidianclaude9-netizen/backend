@@ -11,7 +11,7 @@ import {
   updateTransactionSettingsSchema,
   updateNotificationPreferencesSchema,
 } from './advancedSettings.schema';
-
+import { csrfProtection } from '../../middleware/csrf';
 const router = Router();
 router.use(authenticateJWT, requireSuperAdmin);
 
@@ -22,6 +22,7 @@ router.get('/all', settingsController.getAllSettings);
 router.patch(
   '/regional',
   validate(updateRegionalSettingsSchema),
+  csrfProtection, 
   auditLog('UPDATE_REGIONAL_SETTINGS', 'SETTINGS'),
   settingsController.updateRegionalSettings
 );
@@ -30,6 +31,7 @@ router.patch(
 router.patch(
   '/operating-hours',
   validate(updateOperatingHoursSchema),
+  csrfProtection, 
   auditLog('UPDATE_OPERATING_HOURS', 'SETTINGS'),
   settingsController.updateOperatingHours
 );
@@ -38,6 +40,7 @@ router.patch(
 router.patch(
   '/email-footer',
   validate(updateEmailFooterSchema),
+  csrfProtection, 
   auditLog('UPDATE_EMAIL_FOOTER', 'SETTINGS'),
   settingsController.updateEmailFooter
 );
@@ -46,6 +49,7 @@ router.patch(
 router.patch(
   '/payment-gateway',
   validate(updatePaymentGatewaySchema),
+  csrfProtection, 
   auditLog('UPDATE_PAYMENT_GATEWAY', 'SETTINGS'),
   settingsController.updatePaymentGateway
 );
@@ -54,6 +58,7 @@ router.patch(
 router.patch(
   '/transaction',
   validate(updateTransactionSettingsSchema),
+  csrfProtection, 
   auditLog('UPDATE_TRANSACTION_SETTINGS', 'SETTINGS'),
   settingsController.updateTransactionSettings
 );
@@ -62,6 +67,7 @@ router.patch(
 router.patch(
   '/notifications',
   validate(updateNotificationPreferencesSchema),
+  csrfProtection, 
   auditLog('UPDATE_NOTIFICATION_PREFERENCES', 'SETTINGS'),
   settingsController.updateNotificationPreferences
 );
@@ -69,7 +75,7 @@ router.patch(
 // Login activity & sessions
 router.get('/login-activity', settingsController.getLoginActivities);
 router.get('/sessions', settingsController.getActiveSessions);
-router.delete('/sessions/:sessionId', settingsController.terminateSession);
-router.delete('/sessions', settingsController.terminateAllSessions);
+router.delete('/sessions/:sessionId',csrfProtection,  settingsController.terminateSession);
+router.delete('/sessions',csrfProtection,  settingsController.terminateAllSessions);
 
 export default router;

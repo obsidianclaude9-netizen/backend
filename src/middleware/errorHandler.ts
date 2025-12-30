@@ -12,7 +12,6 @@ export class AppError extends Error {
     Object.setPrototypeOf(this, AppError.prototype);
   }
 }
-
 export const errorHandler = (
   err: Error,
   req: Request,
@@ -20,10 +19,12 @@ export const errorHandler = (
   _next: NextFunction
 ) => {
   const requestId = req.headers['x-request-id'] as string;
+  
+  // Log full error server-side
   logger.error('Error occurred:', {
     requestId,
     error: err.message,
-    stack: err.stack, 
+    stack: err.stack,
     path: req.path,
     method: req.method,
     userId: req.user?.userId,
@@ -33,13 +34,19 @@ export const errorHandler = (
     return res.status(err.statusCode).json({
       error: err.message,
       requestId,
+      ...(process.env.NODE_ENV === 'development' && { stack: err.stack }), // ✅ Only in dev
     });
   }
+  
   const message = process.env.NODE_ENV === 'production'
     ? 'An error occurred'
     : err.message;
     
-  return res.status(500).json({ error: message, requestId  });
+  return res.status(500).json({ 
+    error: message, 
+    requestId,
+    ...(process.env.NODE_ENV === 'development' && { stack: err.stack }), // ✅ Only in dev
+  });
 };
 export const notFoundHandler = (
   req: Request,

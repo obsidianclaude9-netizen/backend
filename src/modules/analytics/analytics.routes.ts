@@ -8,13 +8,11 @@ import { exportLimiter, apiLimiter } from '../../middleware/rateLimit';
 import { analyticsQuerySchema } from './analytics.schema';
 import * as forecastingController from './forecasting.controller';
 import * as excelExportController from './excel-export.controller';
-
+import { csrfProtection } from '../../middleware/csrf';
 const router = Router();
 
-// All analytics routes require admin authentication
 router.use(authenticateJWT, requireAdmin);
 
-// Apply rate limiting to all analytics endpoints
 router.use(apiLimiter);
 
 // ===== DASHBOARD KPIs =====
@@ -42,7 +40,7 @@ router.get(
 
 router.get(
   '/revenue/targets',
-  cache(600), // 10 minutes
+  cache(600), 
   analyticsController.getRevenueTargets
 );
 
@@ -179,22 +177,24 @@ router.get('/customers', cache(300), analyticsController.getCustomerStats);
 router.get('/scans', cache(300), analyticsController.getScanStats);
 router.get('/campaigns', cache(300), analyticsController.getCampaignStats);
 
-// ===== EXPORTS (STRICT RATE LIMITING) =====
+
 router.post(
   '/export/:type',
-  exportLimiter, // 2 requests per minute
+  csrfProtection,  
+  exportLimiter,
   validate(analyticsQuerySchema),
   analyticsController.exportData
 );
-
 router.post(
   '/export/custom',
   exportLimiter,
+  csrfProtection, 
   analyticsController.exportCustomReport
 );
 
 router.post(
   '/export/excel',
+  csrfProtection, 
   exportLimiter,
   excelExportController.exportAnalyticsExcel
 );

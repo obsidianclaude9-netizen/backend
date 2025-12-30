@@ -9,3 +9,4 @@ console.log('# Add these to your .env file:');
 console.log(`JWT_SECRET=${generateSecret(64)}`);
 console.log(`JWT_REFRESH_SECRET=${generateSecret(64)}`);
 console.log(`QR_ENCRYPTION_KEY=${crypto.randomBytes(32).toString('hex')}`);
+console.log(`QR_ENCRYPTION_KEY_V2=${crypto.randomBytes(32).toString('hex')}`)
