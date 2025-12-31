@@ -36,3 +36,33 @@ export const validateSecrets = (): void => {
 
   logger.info('✅ All secrets validated successfully');
 };
+export const validateFileEncryptionKey = (): void => {
+  const key = process.env.FILE_ENCRYPTION_KEY;
+  
+  if (!key) {
+    throw new Error('FILE_ENCRYPTION_KEY is not set in environment variables');
+  }
+
+  if (!/^[0-9a-fA-F]{64}$/.test(key)) {
+    throw new Error('FILE_ENCRYPTION_KEY must be 64 character hex string (256-bit)');
+  }
+
+  const uniqueChars = new Set(key.toLowerCase().split('')).size;
+  if (uniqueChars < 12) {
+    throw new Error(`FILE_ENCRYPTION_KEY has insufficient entropy (${uniqueChars} unique chars, min 12)`);
+  }
+  const weakPatterns = [
+    /^0+$/,
+    /^f+$/i,
+    /^(00)+$/,
+    /^(ff)+$/i,
+  ];
+
+  for (const pattern of weakPatterns) {
+    if (pattern.test(key)) {
+      throw new Error('FILE_ENCRYPTION_KEY contains weak pattern');
+    }
+  }
+
+  logger.info('✅ FILE_ENCRYPTION_KEY validation passed');
+};

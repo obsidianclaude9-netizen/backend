@@ -622,7 +622,7 @@ export class OrderService {
       revenue: totalRevenue._sum.amount || 0,
     };
   }
-  // Add to src/modules/orders/order.service.ts
+  
 
   async refundOrder(
     orderId: string,
@@ -633,68 +633,72 @@ export class OrderService {
     const start = Date.now();
 
     try {
-      const order = await prisma.order.findUnique({
-        where: { id: orderId },
-        include: {
-          customer: true,
-          tickets: true,
-          refunds: {
-            where: { status: { in: ['COMPLETED', 'PROCESSING'] } }
-          }
-        }
-      });
 
-      if (!order) {
-        throw new AppError(404, 'Order not found');
-      }
-
-      if (order.status !== OrderStatus.COMPLETED) {
-        throw new AppError(400, 'Only completed orders can be refunded');
-      }
-
-      if (!order.paidAt) {
-        throw new AppError(400, 'Order payment not confirmed');
-      }
-
-      // Check refund window (e.g., 30 days)
-      const daysSincePurchase = Math.floor(
-        (Date.now() - order.paidAt.getTime()) / (1000 * 60 * 60 * 24)
-      );
-      
-      if (daysSincePurchase > 30 && data.reason !== 'FRAUD') {
-        throw new AppError(400, 'Refund window has expired (30 days)');
-      }
-
-      // Calculate refundable amount
-      const orderAmount = parseFloat(order.amount.toString());
-      const totalRefunded = order.refunds.reduce(
-        (sum, r) => sum + parseFloat(r.amount.toString()),
-        0
-      );
-      const refundableAmount = orderAmount - totalRefunded;
-
-      if (refundableAmount <= 0) {
-        throw new AppError(400, 'Order already fully refunded');
-      }
-
-      const refundAmount = data.amount || refundableAmount;
-
-      if (refundAmount > refundableAmount) {
-        throw new AppError(400, `Maximum refundable amount is ${refundableAmount}`);
-      }
-
-      // Check if tickets have been used
-      const usedTickets = order.tickets.filter(t => t.scanCount > 0);
-      if (usedTickets.length > 0 && data.reason === 'CUSTOMER_REQUEST') {
-        throw new AppError(
-          400,
-          `Cannot refund: ${usedTickets.length} ticket(s) already used`
-        );
-      }
-
-      // Create refund record and process
       const result = await prisma.$transaction(async (tx) => {
-        // Create refund record
+      
+        const order = await tx.order.findUnique({
+          where: { id: orderId },
+          include: {
+            customer: true,
+            tickets: true,
+            refunds: {
+              where: { status: { in: ['COMPLETED', 'PROCESSING'] } }
+            }
+          }
+        });
+
+        if (!order) {
+          throw new AppError(404, 'Order not found');
+        }
+
+        if (order.status !== OrderStatus.COMPLETED) {
+          throw new AppError(400, 'Only completed orders can be refunded');
+        }
+
+        if (!order.paidAt) {
+          throw new AppError(400, 'Order payment not confirmed');
+        }
+
+        const daysSincePurchase = Math.floor(
+          (Date.now() - order.paidAt.getTime()) / (1000 * 60 * 60 * 24)
+        );
+      
+        if (daysSincePurchase > 30 && data.reason !== 'FRAUD') {
+          throw new AppError(400, 'Refund window has expired (30 days)');
+        }
+
+        const orderAmount = parseFloat(order.amount.toString());
+        const totalRefunded = order.refunds.reduce(
+          (sum, r) => sum + parseFloat(r.amount.toString()),
+          0
+        );
+        const refundableAmount = orderAmount - totalRefunded;
+
+        if (refundableAmount <= 0) {
+          throw new AppError(400, 'Order already fully refunded');
+        }
+
+        const refundAmount = data.amount || refundableAmount;
+
+        if (refundAmount <= 0) {
+          throw new AppError(400, 'Refund amount must be greater than 0');
+        }
+
+        if (refundAmount > refundableAmount) {
+          throw new AppError(
+            400,
+            `Maximum refundable amount is ${refundableAmount.toFixed(2)}`
+          );
+        }
+
+        const usedTickets = order.tickets.filter(t => t.scanCount > 0);
+        if (usedTickets.length > 0 && data.reason === 'CUSTOMER_REQUEST') {
+          throw new AppError(
+            400,
+            `Cannot refund: ${usedTickets.length} ticket(s) already used`
+          );
+        }
+
         const refund = await tx.refund.create({
           data: {
             orderId: order.id,
@@ -706,10 +710,8 @@ export class OrderService {
           }
         });
 
-        // Import payment service
         const { paymentService } = await import('../payment/payment.service');
 
-        // Initiate refund with payment gateway
         let gatewayResult;
         try {
           gatewayResult = await paymentService.initiateRefund(
@@ -718,7 +720,7 @@ export class OrderService {
             data.reasonDetails
           );
 
-          // Update refund with gateway response
+          // Mark refund as completed
           await tx.refund.update({
             where: { id: refund.id },
             data: {
@@ -728,25 +730,34 @@ export class OrderService {
               gatewayResponse: gatewayResult as any
             }
           });
-
+        
         } catch (error: any) {
-          // Mark refund as failed
           await tx.refund.update({
             where: { id: refund.id },
             data: {
               status: 'FAILED',
-              failureReason: error.message
+              failureReason: error.message || 'Payment gateway error'
             }
           });
 
-          throw error;
+          logger.error('Payment gateway refund failed', {
+            orderId,
+            refundId: refund.id,
+            error: error.message
+          });
+
+          throw new AppError(
+            500,
+            `Refund failed: ${error.message || 'Payment gateway error'}`
+          );
         }
 
-        // Check if full refund
-        const isFullRefund = refundAmount >= orderAmount;
+        
+        const newTotalRefunded = totalRefunded + refundAmount;
+        const isFullRefund = newTotalRefunded >= orderAmount;
 
         if (isFullRefund) {
-          // Update order status
+          // Full refund: cancel order and tickets
           await tx.order.update({
             where: { id: orderId },
             data: {
@@ -755,7 +766,7 @@ export class OrderService {
               paymentMetadata: {
                 refunded: true,
                 refundedAt: new Date(),
-                refundAmount: refundAmount,
+                refundAmount: newTotalRefunded,
                 refundReason: data.reason
               } as any
             }
@@ -767,7 +778,7 @@ export class OrderService {
             data: { status: TicketStatus.CANCELLED }
           });
 
-          // Update customer stats
+          // Update customer statistics
           await tx.customer.update({
             where: { id: order.customerId },
             data: {
@@ -776,99 +787,167 @@ export class OrderService {
             }
           });
         } else {
-          // Partial refund - update metadata only
+          const existingRefunds = (order.paymentMetadata as any)?.refunds || [];
+          
           await tx.order.update({
             where: { id: orderId },
             data: {
               paymentMetadata: {
                 partiallyRefunded: true,
-                totalRefunded: totalRefunded + refundAmount,
-                refunds: [...(order.paymentMetadata as any)?.refunds || [], {
-                  amount: refundAmount,
-                  reason: data.reason,
-                  processedAt: new Date()
-                }]
+                totalRefunded: newTotalRefunded,
+                refunds: [
+                  ...existingRefunds,
+                  {
+                    amount: refundAmount,
+                    reason: data.reason,
+                    processedAt: new Date(),
+                    refundId: refund.id
+                  }
+                ]
               } as any
             }
           });
         }
 
-        return { refund, gatewayResult, isFullRefund };
+        return { 
+          refund, 
+          gatewayResult, 
+          isFullRefund,
+          order: {
+            id: order.id,
+            orderNumber: order.orderNumber,
+            customerId: order.customerId,
+            customer: order.customer,
+            tickets: order.tickets
+          },
+          refundAmount,
+          newTotalRefunded
+        };
+      }, {
+        isolationLevel: 'Serializable', 
+        timeout: 20000, 
+        maxWait: 5000 
       });
 
-      // Send refund confirmation email
       await emailQueue.add('refund-confirmation', {
-        orderId: order.id,
-        customerEmail: order.customer.email,
-        customerName: `${order.customer.firstName} ${order.customer.lastName}`,
-        orderNumber: order.orderNumber,
-        refundAmount,
+        orderId: result.order.id,
+        customerEmail: result.order.customer.email,
+        customerName: `${result.order.customer.firstName} ${result.order.customer.lastName}`,
+        orderNumber: result.order.orderNumber,
+        refundAmount: result.refundAmount,
         isFullRefund: result.isFullRefund,
         reason: data.reasonDetails
+      }).catch(error => {
+        logger.error('Failed to queue refund confirmation email', {
+          orderId: result.order.id,
+          error: error.message
+        });
       });
 
-      // Notify admins
       await emailQueue.add('refund-notification-admin', {
         to: process.env.ADMIN_EMAIL || 'admin@jgpnr.com',
-        orderNumber: order.orderNumber,
-        customerName: `${order.customer.firstName} ${order.customer.lastName}`,
-        refundAmount,
+        orderNumber: result.order.orderNumber,
+        customerName: `${result.order.customer.firstName} ${result.order.customer.lastName}`,
+        refundAmount: result.refundAmount,
         reason: data.reason,
         reasonDetails: data.reasonDetails,
         initiatedBy: userId
+      }).catch(error => {
+        logger.error('Failed to queue admin refund notification', {
+          orderId: result.order.id,
+          error: error.message
+        });
       });
 
-      // Log in immutable audit
       await immutableAuditService.createLog({
         userId,
         action: 'ORDER_REFUNDED',
         entity: 'ORDER',
-        entityId: orderId,
+        entityId: result.order.id,
         ipAddress,
         metadata: {
-          orderNumber: order.orderNumber,
+          orderNumber: result.order.orderNumber,
           refundId: result.refund.id,
-          amount: refundAmount,
+          amount: result.refundAmount,
           isFullRefund: result.isFullRefund,
           reason: data.reason,
           reasonDetails: data.reasonDetails,
-          customerId: order.customerId,
-          ticketsCancelled: result.isFullRefund ? order.tickets.length : 0
+          customerId: result.order.customerId,
+          ticketsCancelled: result.isFullRefund ? result.order.tickets.length : 0,
+          gatewayRefundId: result.gatewayResult?.refundId
         }
+      }).catch(error => {
+        logger.error('Failed to create audit log for refund', {
+          orderId: result.order.id,
+          error: error.message
+        });
       });
 
       logger.info('Order refunded successfully', {
-        orderId,
+        orderId: result.order.id,
         refundId: result.refund.id,
-        amount: refundAmount,
+        amount: result.refundAmount,
+        isFullRefund: result.isFullRefund,
         processingTime: Date.now() - start
       });
 
-      // Invalidate caches
       await Promise.all([
-        invalidateCache(`api:/orders/${orderId}*`),
+        invalidateCache(`api:/orders/${result.order.id}*`),
         invalidateCache('api:/analytics/*'),
-        invalidateCache(`api:/customers/${order.customerId}*`)
-      ]);
+        invalidateCache(`api:/customers/${result.order.customerId}*`)
+      ]).catch(error => {
+        logger.error('Failed to invalidate cache after refund', {
+          orderId: result.order.id,
+          error: error.message
+        });
+      });
 
       return {
+        success: true,
         message: 'Refund processed successfully',
-        refund: result.refund,
+        refund: {
+          id: result.refund.id,
+          amount: result.refundAmount,
+          status: 'COMPLETED',
+          reference: result.refund.refundReference
+        },
         isFullRefund: result.isFullRefund,
-        refundAmount,
         order: {
-          id: order.id,
-          orderNumber: order.orderNumber,
-          status: result.isFullRefund ? OrderStatus.CANCELLED : order.status
+          id: result.order.id,
+          orderNumber: result.order.orderNumber,
+          status: result.isFullRefund ? OrderStatus.CANCELLED : OrderStatus.COMPLETED,
+          totalRefunded: result.newTotalRefunded
         }
       };
 
     } catch (error) {
+
       monitoring.captureException(error as Error, {
         operation: 'refundOrder',
-        orderId
+        orderId,
+        refundAmount: data.amount,
+        reason: data.reason
       });
-      throw error;
+
+      if (error instanceof AppError) {
+        throw error;
+      }
+      if (error && typeof error === 'object' && 'code' in error) {
+        if (error.code === 'P2028') {
+          throw new AppError(408, 'Transaction timeout. Please try again.');
+        }
+        if (error.code === 'P2034') {
+          throw new AppError(409, 'Concurrent refund detected. Please try again.');
+        }
+      }
+
+      logger.error('Unexpected error in refundOrder', {
+        orderId,
+        error: error instanceof Error ? error.message : 'Unknown error',
+        stack: error instanceof Error ? error.stack : undefined
+      });
+
+      throw new AppError(500, 'Failed to process refund. Please try again.');
     }
   }
   private async generateQRForTicket(ticket: any, order: any): Promise<string> {

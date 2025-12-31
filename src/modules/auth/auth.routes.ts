@@ -1,5 +1,5 @@
 // src/modules/auth/auth.routes.ts - FIXED
-import { Router, Request } from 'express';
+import { Router, Request, Response } from 'express';
 import * as authController from './auth.controller';
 import * as twoFactorController from './twoFactor.controller';
 import { validate } from '../../middleware/validate';
@@ -7,6 +7,7 @@ import { authenticateJWT, requireSuperAdmin } from '../../middleware/auth';
 import { authLimiter } from '../../middleware/rateLimit';
 import { auditLog } from '../../middleware/audit';
 import rateLimit from 'express-rate-limit';
+import logger from '../../utils/logger';
 import {
   loginSchema,
   refreshTokenSchema,
@@ -53,7 +54,7 @@ const emailRateLimiter = rateLimit({
     return `email-reset:${email.toLowerCase()}`;
   },
 
-  handler: (req: Request, res: Response) => {
+  handler: (req, res) => {
     logger.error('Excessive password reset attempts for single email', {
       email: req.body?.email,
       ip: req.ip
@@ -77,7 +78,7 @@ const passwordResetLimiter = rateLimit({
     return `${ip}:${email.toLowerCase()}`;
   },
 
-  handler: (req: Request, res: Response) => {
+  handler: (req, res) => {
     logger.warn('Password reset rate limit exceeded', {
       ip: req.ip,
       email: req.body?.email,

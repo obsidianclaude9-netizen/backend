@@ -1,13 +1,8 @@
-// src/utils/monitoring.service.ts
 import * as Sentry from '@sentry/node';
 import prisma from '../config/database';
 import redis from '../config/cache';
 
-
 export class MonitoringService {
-  /**
-   * Check database health
-   */
   async checkDatabase(): Promise<{ healthy: boolean; responseTime: number }> {
     const start = Date.now();
     try {
@@ -25,9 +20,6 @@ export class MonitoringService {
     }
   }
 
-  /**
-   * Check Redis health
-   */
   async checkRedis(): Promise<{ healthy: boolean; responseTime: number }> {
     const start = Date.now();
     try {
@@ -45,9 +37,6 @@ export class MonitoringService {
     }
   }
 
-  /**
-   * Get system metrics
-   */
   async getSystemMetrics() {
     const [db, cache, memory, uptime] = await Promise.all([
       this.checkDatabase(),
@@ -65,68 +54,56 @@ export class MonitoringService {
     };
   }
 
-  /**
-   * Get memory usage
-   */
   private getMemoryUsage() {
     const usage = process.memoryUsage();
     return {
-      heapUsed: Math.round(usage.heapUsed / 1024 / 1024), // MB
+      heapUsed: Math.round(usage.heapUsed / 1024 / 1024),
       heapTotal: Math.round(usage.heapTotal / 1024 / 1024),
       rss: Math.round(usage.rss / 1024 / 1024),
       external: Math.round(usage.external / 1024 / 1024),
     };
   }
 
-  /**
-   * Track custom metric
-   */
   trackMetric(name: string, value: number, tags?: Record<string, string>) {
     Sentry.metrics.gauge(name, value, { tags });
   }
 
-  /**
-   * Track performance
-   */
   trackPerformance(operation: string, duration: number) {
     Sentry.metrics.distribution('operation.duration', duration, {
       tags: { operation },
     });
   }
 
-  /**
-   * Capture exception with context
-   */
+  trackCacheHit(source: 'redis' | 'database', key: string) {
+    Sentry.metrics.increment('cache.hit', 1, {
+      tags: { source, key_prefix: key.split(':')[0] },
+    });
+  }
+
+  trackCacheMiss(key: string) {
+    Sentry.metrics.increment('cache.miss', 1, {
+      tags: { key_prefix: key.split(':')[0] },
+    });
+  }
+
   captureException(error: Error, context?: Record<string, any>) {
     Sentry.captureException(error, {
       contexts: { custom: context },
     });
   }
 
-  /**
-   * Capture message
-   */
   captureMessage(message: string, level: 'info' | 'warning' | 'error' = 'info') {
     Sentry.captureMessage(message, level);
   }
 
-  /**
-   * Set user context
-   */
   setUser(userId: string, email: string) {
     Sentry.setUser({ id: userId, email });
   }
 
-  /**
-   * Clear user context
-   */
   clearUser() {
     Sentry.setUser(null);
   }
 
-  /**
-   * Add breadcrumb
-   */
   addBreadcrumb(message: string, data?: Record<string, any>) {
     Sentry.addBreadcrumb({
       message,
@@ -135,9 +112,6 @@ export class MonitoringService {
     });
   }
 
-  /**
-   * Start transaction for performance monitoring
-   */
   startTransaction(name: string, op: string) {
     return Sentry.startTransaction({ name, op });
   }

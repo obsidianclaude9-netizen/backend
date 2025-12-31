@@ -6,8 +6,6 @@ import prisma from '../../config/database';
 import { AppError } from '../../middleware/errorHandler';
 import { logger } from '../../utils/logger';
 import * as crypto from 'crypto';
-import { securityLogger } from '../../utils/security-logger';
-
 
 export class TwoFactorService {
   
@@ -151,13 +149,10 @@ export class TwoFactorService {
     if (!isValid) {
       throw new AppError(400, 'Invalid 2FA code');
     }
-     if (!isValid) {
-      await securityLogger.logFailedTwoFactor(userId, undefined, attemptNumber);
-      throw new AppError(400, 'Invalid 2FA code');
-    }
 
     return true;
   }
+
   async disableTwoFactor(userId: string, password: string) {
     const user = await prisma.user.findUnique({
       where: { id: userId },
@@ -202,9 +197,6 @@ export class TwoFactorService {
     return { codes, hashed };
   }
 
-
- 
-
   async regenerateBackupCodes(userId: string, password: string) {
     const user = await prisma.user.findUnique({
       where: { id: userId },
@@ -224,12 +216,12 @@ export class TwoFactorService {
 
     await prisma.user.update({
       where: { id: userId },
-      data: { twoFactorBackupCodes: JSON.stringify(backupCodes) },
+      data: { twoFactorBackupCodes: JSON.stringify(backupCodes.hashed) },
     });
 
     logger.info(`Backup codes regenerated for user: ${user.email}`);
     return {
-        backupCodes: backupCodes.codes
+      backupCodes: backupCodes.codes
     };
   }
 }

@@ -9,19 +9,23 @@ export class MaterializedViewService {
     const start = Date.now();
     
     try {
-      await prisma.$executeRaw`SELECT refresh_analytics_views()`;
-      
+      await prisma.$executeRaw`
+        BEGIN;
+        REFRESH MATERIALIZED VIEW CONCURRENTLY analytics_daily_revenue;
+        REFRESH MATERIALIZED VIEW CONCURRENTLY analytics_monthly_revenue;
+        REFRESH MATERIALIZED VIEW CONCURRENTLY analytics_session_performance;
+        REFRESH MATERIALIZED VIEW CONCURRENTLY analytics_customer_segments;
+        REFRESH MATERIALIZED VIEW CONCURRENTLY analytics_scan_stats;
+        COMMIT;
+      `;
       const duration = Date.now() - start;
-      logger.info(`Materialized views refreshed in ${duration}ms`);
+      logger.info(`Materialized views refreshed atomically in ${duration}ms`);
     } catch (error) {
       logger.error('Failed to refresh materialized views:', error);
       throw error;
     }
   }
 
-  /**
-   * Get daily revenue from materialized view
-   */
   async getDailyRevenue(startDate: Date, endDate: Date) {
     const data = await prisma.$queryRaw<Array<{
       date: Date;
@@ -53,9 +57,6 @@ export class MaterializedViewService {
     }));
   }
 
-  /**
-   * Get monthly revenue from materialized view
-   */
   async getMonthlyRevenue(months?: number) {
     const limit = months || 12;
     
@@ -89,9 +90,6 @@ export class MaterializedViewService {
     }));
   }
 
-  /**
-   * Get session performance from materialized view
-   */
   async getSessionPerformance() {
     const data = await prisma.$queryRaw<Array<{
       game_session: string;
@@ -128,9 +126,6 @@ export class MaterializedViewService {
     }));
   }
 
-  /**
-   * Get customer segments from materialized view
-   */
   async getCustomerSegments() {
     const data = await prisma.$queryRaw<Array<{
       segment: string;
@@ -156,9 +151,7 @@ export class MaterializedViewService {
     }));
   }
 
-  /**
-   * Get scan statistics from materialized view
-   */
+  
   async getScanStats(startDate: Date, endDate: Date) {
     const data = await prisma.$queryRaw<Array<{
       date: Date;

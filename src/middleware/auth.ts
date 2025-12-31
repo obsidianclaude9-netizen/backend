@@ -9,6 +9,8 @@ import { cacheService } from '../utils/cache.service';
 import path from 'path';
 import { emailQueue } from '../config/queue';
 import { geolocationService } from '../utils/geolocation';
+import crypto from 'crypto';
+
 export interface JWTPayload {
   userId: string;
   email: string;
@@ -32,8 +34,42 @@ const isTokenBlacklisted = async (token: string): Promise<boolean> => {
     const exists = await cacheService.exists(`blacklist:${token}`);
     return exists;
   } catch (error) {
-    logger.error('Token blacklist check failed:', error);
-    throw new Error('Token verification unavailable');
+    logger.error('Token blacklist check failed - Redis unavailable', {
+      error: error instanceof Error ? error.message : 'Unknown error',
+      tokenPrefix: token.substring(0, 20) + '...'
+    });
+
+    try {
+      const dbBlacklist = await prisma.blacklistedToken.findUnique({
+        where: { token: crypto.createHash('sha256').update(token).digest('hex') }
+      });
+      
+      if (dbBlacklist && dbBlacklist.expiresAt > new Date()) {
+        logger.info('Token found in DB blacklist (Redis fallback)');
+        return true;
+      }
+
+      const decoded = jwt.decode(token) as any;
+      if (decoded?.iat) {
+        const tokenAge = Date.now() - (decoded.iat * 1000);
+        const MAX_TOKEN_AGE_WITHOUT_REDIS = 5 * 60 * 1000; 
+
+        if (tokenAge < MAX_TOKEN_AGE_WITHOUT_REDIS) {
+
+          logger.warn('Accepting recent token despite Redis failure', {
+            tokenAge: Math.floor(tokenAge / 1000) + 's'
+          });
+          return false;
+        }
+      }
+
+      logger.error('SECURITY: Rejecting token - Redis down and token age unknown');
+      throw new Error('Token verification service temporarily unavailable');
+
+    } catch (dbError) {
+      logger.error('Database fallback also failed', { dbError });
+      throw new Error('Token verification unavailable');
+    }
   }
 };
 
@@ -89,7 +125,9 @@ export const authenticate = async (
             role: true,
             isActive: true,
             tokenVersion: true,
-            lockedUntil: true  
+            lockedUntil: true,
+            firstName: true,    
+            lastName: true     
           }
         }
       }

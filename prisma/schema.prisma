@@ -481,12 +481,24 @@ model RevenueTarget {
   @@map("revenue_targets")
 }
 
+model BlacklistedToken {
+  id        String   @id @default(cuid())
+  token     String   @unique 
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  
+  @@index([expiresAt])
+  @@map("blacklisted_tokens")
+}
 model WebhookLog {
   id String @id @default(cuid())
   event String
   reference String
+  idempotencyHash  String 
+  status String @default("pending") 
   processedAt DateTime @default(now())
   
   @@unique([event, reference])
+  @@index([idempotencyHash])
   @@map("webhook_logs")
 }

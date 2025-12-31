@@ -5,10 +5,16 @@ import fs from 'fs/promises';
 import { logger } from './logger';
 
 const ALGORITHM = 'aes-256-gcm';
-const FILE_ENCRYPTION_KEY = Buffer.from(
-  process.env.FILE_ENCRYPTION_KEY || '', 
-  'hex'
-);
+const FILE_ENCRYPTION_KEY_HEX = process.env.FILE_ENCRYPTION_KEY;
+
+if (!FILE_ENCRYPTION_KEY_HEX || !/^[0-9a-fA-F]{64}$/.test(FILE_ENCRYPTION_KEY_HEX)) {
+  throw new Error(
+    'FILE_ENCRYPTION_KEY must be set and be a 64-character hex string. ' +
+    'Generate one with: openssl rand -hex 32'
+  );
+}
+
+const FILE_ENCRYPTION_KEY = Buffer.from(FILE_ENCRYPTION_KEY_HEX, 'hex');
 
 export const encryptFile = async (
   filepath: string
@@ -23,11 +29,10 @@ export const encryptFile = async (
   
   const authTag = cipher.getAuthTag();
   
-  // Format: IV (16) + AuthTag (16) + Encrypted Data
   const output = Buffer.concat([iv, authTag, encrypted]);
   
   await fs.writeFile(filepath + '.enc', output);
-  await fs.unlink(filepath); // Delete original
+  await fs.unlink(filepath); 
   
   logger.info('File encrypted', { filepath });
 };

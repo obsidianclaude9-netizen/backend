@@ -12,13 +12,6 @@ export const auditCleanupJob = new CronJob(
     try {
       logger.info('Starting audit log cleanup...');
 
-      
-      const retentionPolicies = [
-        { days: 90, description: 'Standard logs' },
-        
-        { days: 2555, description: 'Financial & security logs (7 years)' }
-      ];
-
       const deletedCount = await AuditLogger.cleanupOldLogs(90);
 
       const [

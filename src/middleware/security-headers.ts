@@ -29,10 +29,6 @@ export const configureSecurityHeaders = (app: Express) => {
 
       dnsPrefetchControl: { allow: false },
 
-      expectCt: {
-        maxAge: 86400,
-        enforce: true,
-      },
 
       frameguard: { action: 'deny' },
       hidePoweredBy: true,

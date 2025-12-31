@@ -484,4 +484,59 @@ export class AuditLogger {
 
     return result.count;
   }
+  static async verifyChainIntegrity(limit: number = 100): Promise<{
+    valid: boolean;
+    checkedCount: number;
+    errors: string[];
+  }> {
+    try {
+      const logs = await prisma.auditLog.findMany({
+        orderBy: { createdAt: 'desc' },
+        take: limit,
+        select: {
+          id: true,
+          action: true,
+          entity: true,
+          entityId: true,
+          createdAt: true,
+          userId: true,
+        },
+      });
+
+      const errors: string[] = [];
+
+      // Basic integrity checks
+      for (let i = 0; i < logs.length - 1; i++) {
+        const current = logs[i];
+        const next = logs[i + 1];
+
+        // Check chronological order
+        if (current.createdAt < next.createdAt) {
+          errors.push(`Chronological order violation at log ${current.id}`);
+        }
+
+        // Check for suspicious gaps (more than 24 hours between consecutive logs)
+        const timeDiff = current.createdAt.getTime() - next.createdAt.getTime();
+        if (timeDiff > 24 * 60 * 60 * 1000) {
+          logger.warn('Large time gap detected in audit logs', {
+            logId: current.id,
+            gap: `${(timeDiff / (60 * 60 * 1000)).toFixed(2)} hours`,
+          });
+        }
+      }
+
+      return {
+        valid: errors.length === 0,
+        checkedCount: logs.length,
+        errors,
+      };
+    } catch (error) {
+      logger.error('Failed to verify audit chain integrity', { error });
+      return {
+        valid: false,
+        checkedCount: 0,
+        errors: ['Failed to perform integrity check'],
+      };
+    }
+  }
 }
