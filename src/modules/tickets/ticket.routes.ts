@@ -4,6 +4,7 @@ import * as ticketController from './ticket.controller';
 import { validate } from '../../middleware/validate';
 import { authenticateJWT, requireAdmin, requireStaff } from '../../middleware/auth';
 import { auditLog } from '../../middleware/audit';
+import { authorizeResource } from '../../middleware/authorization';
 import {
   createTicketSchema,
   updateTicketSchema,
@@ -15,32 +16,25 @@ import {
 
 const router = Router();
 
-// All ticket routes require authentication
+
 router.use(authenticateJWT);
 
-// List & search tickets
 router.get(
   '/',
   validate(listTicketsSchema),
   ticketController.listTickets
 );
 
-// Get ticket stats
 router.get('/stats', ticketController.getTicketStats);
 
-// Active tickets
 router.get('/active', ticketController.listTickets);
 
-// Scanned tickets
 router.get('/scanned', ticketController.listTickets);
 
-// Get single ticket
-router.get('/:id', ticketController.getTicket);
+router.get('/:id', authorizeResource('ticket', 'id'), ticketController.getTicket);
 
-// Get ticket by code
 router.get('/code/:code', ticketController.getTicketByCode);
 
-// Create tickets (Admin+)
 router.post(
   '/',
   requireAdmin,
@@ -49,7 +43,6 @@ router.post(
   ticketController.createTickets
 );
 
-// Update ticket (Admin+)
 router.patch(
   '/:id',
   requireAdmin,
@@ -58,7 +51,6 @@ router.patch(
   ticketController.updateTicket
 );
 
-// Cancel ticket (Admin+)
 router.delete(
   '/:id',
   requireAdmin,
@@ -66,7 +58,6 @@ router.delete(
   ticketController.cancelTicket
 );
 
-// Validate ticket (All staff)
 router.post(
   '/validate',
   requireStaff,
@@ -74,7 +65,6 @@ router.post(
   ticketController.validateTicket
 );
 
-// Scan ticket (All staff) - CRITICAL ENDPOINT
 router.post(
   '/scan',
   requireStaff,
@@ -83,14 +73,12 @@ router.post(
   ticketController.scanTicket
 );
 
-// Scan history
 router.get(
   '/scans/history',
   requireStaff,
   ticketController.getScanHistory
 );
 
-// Ticket settings
 router.get('/settings/config', requireAdmin, ticketController.getSettings);
 
 router.patch(

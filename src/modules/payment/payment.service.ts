@@ -80,7 +80,7 @@ export class PaymentService {
         await this.logWebhookFailure(payload, req.ip, 'Missing reference');
         throw new AppError(400, 'Missing payment reference');
       }
-
+      
       await this.validateWebhookTimestamp(data);
 
       const isDuplicate = await this.checkIdempotency(event, reference);
@@ -686,7 +686,8 @@ export class PaymentService {
       success: false,
     });
   }
- private async sendPaymentConfirmationEmail(order: any, paymentData: any) {
+
+  private async sendPaymentConfirmationEmail(order: any, paymentData: any) {
     try {
       await emailQueue.add('payment-confirmation', {
         orderId: order.id,

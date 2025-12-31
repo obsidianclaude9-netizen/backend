@@ -3,7 +3,8 @@ import * as customerController from './customer.controller';
 import { authenticate, requireAdmin, requireStaff } from '../../middleware/auth';
 import { validate, schemas } from '../../middleware/validate';
 import { uploadMiddleware } from '../../middleware/upload';
-
+import { csrfProtection } from '../../middleware/csrf';
+import { authorizeResource } from '../../middleware/authorization';
 const router = Router();
 
 router.use(authenticate);
@@ -31,12 +32,14 @@ router.get('/',
 router.post('/',
   requireStaff,
   validate(schemas.createCustomer),
+  csrfProtection,
   customerController.createCustomer
 );
 
 router.get(
   '/:id',
   requireStaff,
+  authorizeResource('customer', 'id'),
   validate(schemas.idParam),
   customerController.getCustomer
 );

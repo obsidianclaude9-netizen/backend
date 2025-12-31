@@ -6,6 +6,7 @@ import { validateUploadedFile } from '../../middleware/upload';
 import { extractAuditContext } from '../../middleware/audit';
 import { UserRole } from '@prisma/client';
 import prisma from '../../config/database';
+import { filterUserResources } from '../../middleware/authorization';
 import {
   CreateCustomerInput,
   UpdateCustomerInput,
@@ -25,7 +26,11 @@ export const createCustomer = asyncHandler(async (req: Request, res: Response) =
 
 export const listCustomers = asyncHandler(async (req: Request, res: Response) => {
   const filters: ListCustomersInput = req.query;
-  const result = await customerService.listCustomers(filters);
+
+  const additionalFilters = await filterUserResources(req, 'customers');
+  const mergedFilters = { ...filters, ...additionalFilters };
+  
+  const result = await customerService.listCustomers(mergedFilters);
   res.json(result);
 });
 

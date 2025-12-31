@@ -180,16 +180,17 @@ export const scanFileForViruses = async (filepath: string): Promise<boolean> => 
     return false;
   }
 };
+
 export const validateUploadedFile = async (filepath: string): Promise<boolean> => {
   try {
     const buffer = await fsPromises.readFile(filepath);
 
+    
     const fileType = await fileTypeFromBuffer(buffer);
-
     if (!fileType) {
       logger.warn('Could not determine file type from magic bytes', { filepath });
       await fsPromises.unlink(filepath);
-      return false;
+      throw new Error('INVALID_FILE_TYPE'); 
     }
 
     const allowedTypes = ['jpg', 'png', 'gif', 'webp', 'pdf', 'docx', 'xlsx'];
@@ -200,39 +201,64 @@ export const validateUploadedFile = async (filepath: string): Promise<boolean> =
         actualType: fileType.ext,
       });
       await fsPromises.unlink(filepath);
-      return false;
+      throw new Error('DISALLOWED_FILE_TYPE'); 
     }
 
+    // Malicious content detection
     const content = buffer.toString('utf8', 0, 1024);
     const dangerousPatterns = [
-      /<script/i,      
-      /<\?php/i,       
-      /<%/,            
-      /#!/,            
-      /__import__/i,   
-      /eval\(/i,       
+      /<script/i, /<\?php/i, /<%/, /#!/, /__import__/i, /eval\(/i,
     ];
 
     for (const pattern of dangerousPatterns) {
       if (pattern.test(content)) {
-        logger.warn('Malicious content detected in upload', { filepath });
+        logger.error('Malicious content detected in upload', { filepath }); 
         await fsPromises.unlink(filepath);
-        return false;
+        throw new Error('MALICIOUS_CONTENT_DETECTED'); 
       }
     }
-     const isClean = await scanFileForViruses(filepath);
+
+    try {
+      const isClean = await scanFileForViruses(filepath);
       if (!isClean) {
-        logger.warn('File failed virus scan', { filepath });
-        return false;
+        throw new Error('VIRUS_DETECTED');
       }
+    } catch (scanError) {
+      
+      logger.error('Virus scan failed or unavailable - REJECTING upload', { 
+        filepath, 
+        error: scanError 
+      });
+      await fsPromises.unlink(filepath);
+      throw new Error('VIRUS_SCAN_UNAVAILABLE'); 
+    }
+
     return true;
   } catch (error) {
     logger.error('File validation error:', error);
-    return false;
+    
+    try {
+      await fsPromises.unlink(filepath);
+    } catch {}
+    throw error; 
   }
 };
 
-
+export const checkClamAVHealth = async (): Promise<boolean> => {
+  try {
+    const testFile = path.join(process.cwd(), 'uploads/temp/clamav-test.txt');
+    await fsPromises.writeFile(testFile, 'EICAR-STANDARD-ANTIVIRUS-TEST-FILE');
+    
+    const { isInfected } = await clamScanner.scanFile(testFile);
+    await fsPromises.unlink(testFile);
+    
+    // Should detect EICAR test file
+    return isInfected === true;
+  } catch (error) {
+    logger.error('ClamAV health check failed', { error });
+    return false;
+  }
+};
 export const uploadSingle = upload.single('file');
 export const uploadAvatar = multer({
   storage,

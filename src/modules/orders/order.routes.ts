@@ -8,7 +8,7 @@ import { csrfProtection } from '../../middleware/csrf';
 import * as orderController from './order.controller';
 import * as orderSchema from './order.schema';
 import { fileDownloadLimiter } from '../../middleware/rateLimit';
-
+import { authorizeResource } from '../../middleware/authorization';
 const router = express.Router();
 
 router.use(authenticate);
@@ -22,6 +22,7 @@ router.get(
 router.get(
   '/:id',
   apiLimiter,
+  authorizeResource('order', 'id'),
   orderController.getOrder
 );
 
@@ -121,6 +122,7 @@ router.get(
 router.post(
   '/:id/refund',
   authenticate,
+  csrfProtection,
   requireAdmin, 
   validate(refundOrderSchema),
   orderController.refundOrder

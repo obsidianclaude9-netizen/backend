@@ -9,36 +9,124 @@ import { logger } from './logger';
 if (!process.env.QR_ENCRYPTION_KEY) {
   throw new Error('QR_ENCRYPTION_KEY is required');
 }
+
 const validateEncryptionKey = () => {
   const key = process.env.QR_ENCRYPTION_KEY;
+  
   if (!key || !/^[0-9a-fA-F]{64}$/.test(key)) {
-    throw new Error('QR_ENCRYPTION_KEY must be 64 character hex');
+    throw new Error('QR_ENCRYPTION_KEY must be 64 character hex (256-bit)');
   }
+
+  const weakPatterns = [
+    /^0+$/,                          // All zeros
+    /^f+$/i,                         // All F's
+    /^(00)+$/,                       // Repeating 00
+    /^(ff)+$/i,                      // Repeating FF
+    /^(0123456789abcdef)+$/i,        // Sequential hex
+    /^(fedcba9876543210)+$/i,        // Reverse sequential
+    /^(.)\1{63}$/,                   // Same character repeated
+  ];
+
+  for (const pattern of weakPatterns) {
+    if (pattern.test(key)) {
+      throw new Error(`QR_ENCRYPTION_KEY contains weak pattern: ${pattern.source}`);
+    }
+  }
+
   const uniqueChars = new Set(key.toLowerCase().split('')).size;
-  if (uniqueChars < 14) {
-    throw new Error('QR_ENCRYPTION_KEY has insufficient entropy (min 14 unique chars)');
+  if (uniqueChars < 12) {
+    throw new Error(
+      `QR_ENCRYPTION_KEY has insufficient entropy: only ${uniqueChars} unique characters (min 12)`
+    );
   }
+
   const charFreq = new Map<string, number>();
-  for (const char of key.toLowerCase()) {
+  const lowerKey = key.toLowerCase();
+  
+  for (const char of lowerKey) {
     charFreq.set(char, (charFreq.get(char) || 0) + 1);
   }
-  
+
   let entropy = 0;
   for (const count of charFreq.values()) {
     const p = count / key.length;
     entropy -= p * Math.log2(p);
   }
-  if (entropy < 3.5) {
-    throw new Error(`QR_ENCRYPTION_KEY entropy too low: ${entropy.toFixed(2)} (min 3.5)`);
+
+  const minEntropy = 3.5;
+  if (entropy < minEntropy) {
+    throw new Error(
+      `QR_ENCRYPTION_KEY entropy too low: ${entropy.toFixed(2)} bits (min ${minEntropy})`
+    );
   }
-  
-  const sequential = ['0123456789abcdef'.repeat(4), 'fedcba9876543210'.repeat(4)];
-  if (sequential.some(s => key.toLowerCase().includes(s.substring(0, 16)))) {
-    throw new Error('QR_ENCRYPTION_KEY contains predictable patterns');
+
+  for (let i = 0; i < lowerKey.length - 8; i++) {
+    const substring = lowerKey.substring(i, i + 8);
+    
+    let isAscending = true;
+    for (let j = 0; j < substring.length - 1; j++) {
+      const curr = parseInt(substring[j], 16);
+      const next = parseInt(substring[j + 1], 16);
+      if ((next - curr) !== 1 && !(curr === 15 && next === 0)) {
+        isAscending = false;
+        break;
+      }
+    }
+    
+    if (isAscending) {
+      throw new Error('QR_ENCRYPTION_KEY contains sequential pattern');
+    }
+
+    let isDescending = true;
+    for (let j = 0; j < substring.length - 1; j++) {
+      const curr = parseInt(substring[j], 16);
+      const next = parseInt(substring[j + 1], 16);
+      if ((curr - next) !== 1 && !(curr === 0 && next === 15)) {
+        isDescending = false;
+        break;
+      }
+    }
+    
+    if (isDescending) {
+      throw new Error('QR_ENCRYPTION_KEY contains sequential pattern');
+    }
   }
+
+
+  const knownWeakKeys = [
+    'deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef',
+    'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    '0000000000000000000000000000000000000000000000000000000000000000',
+    'ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff',
+  ];
+
+  if (knownWeakKeys.includes(lowerKey)) {
+    throw new Error('QR_ENCRYPTION_KEY matches known weak key');
+  }
+
+  logger.info('✅ QR_ENCRYPTION_KEY validation passed', {
+    entropy: entropy.toFixed(2),
+    uniqueChars
+  });
 };
+if (process.env.QR_ENCRYPTION_KEY_V2) {
+  const validateV2 = () => {
+    const keyV2 = process.env.QR_ENCRYPTION_KEY_V2;
+    
+    if (!keyV2 || !/^[0-9a-fA-F]{64}$/.test(keyV2)) {
+      throw new Error('QR_ENCRYPTION_KEY_V2 must be 64 character hex (256-bit)');
+    }
+    if (keyV2.toLowerCase() === process.env.QR_ENCRYPTION_KEY?.toLowerCase()) {
+      throw new Error('QR_ENCRYPTION_KEY_V2 must differ from QR_ENCRYPTION_KEY');
+    }
+
+  };
+  
+  validateV2();
+}
 
 validateEncryptionKey();
+
 
 
 const IV_LENGTH = 16;

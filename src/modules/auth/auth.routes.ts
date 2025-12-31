@@ -1,5 +1,5 @@
 // src/modules/auth/auth.routes.ts - FIXED
-import { Router } from 'express';
+import { Router, Request } from 'express';
 import * as authController from './auth.controller';
 import * as twoFactorController from './twoFactor.controller';
 import { validate } from '../../middleware/validate';
@@ -19,7 +19,7 @@ import {
 
 const router = Router();
 
-// Password change rate limiter
+
 const passwordLimiter = rateLimit({
   windowMs: 60 * 60 * 1000, // 1 hour
   max: 3, // 3 attempts per hour
@@ -32,7 +32,6 @@ const passwordLimiter = rateLimit({
   },
 });
 
-// 2FA verification rate limiter
 const twoFactorLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
   max: 5, // 5 attempts per 15 minutes
@@ -45,7 +44,61 @@ const twoFactorLimiter = rateLimit({
   },
 });
 
-// Public routes
+const emailRateLimiter = rateLimit({
+  windowMs: 24 * 60 * 60 * 1000, 
+  max: 5, 
+  
+  keyGenerator: (req: Request) => {
+    const email = req.body?.email || 'unknown';
+    return `email-reset:${email.toLowerCase()}`;
+  },
+
+  handler: (req: Request, res: Response) => {
+    logger.error('Excessive password reset attempts for single email', {
+      email: req.body?.email,
+      ip: req.ip
+    });
+
+    res.status(429).json({
+      error: 'Too many reset attempts for this email',
+      message: 'Please contact support if you need assistance',
+      retryAfter: 86400
+    });
+  }
+});
+
+const passwordResetLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000, 
+  max: 3, 
+  skipSuccessfulRequests: false, 
+  keyGenerator: (req: Request) => {
+    const email = req.body?.email || 'unknown';
+    const ip = req.ip || 'unknown';
+    return `${ip}:${email.toLowerCase()}`;
+  },
+
+  handler: (req: Request, res: Response) => {
+    logger.warn('Password reset rate limit exceeded', {
+      ip: req.ip,
+      email: req.body?.email,
+      userAgent: req.get('user-agent'),
+      timestamp: new Date().toISOString()
+    });
+
+    res.status(429).json({
+      error: 'Too many password reset attempts',
+      message: 'Please wait before requesting another password reset',
+      retryAfter: 3600 // seconds
+    });
+  },
+
+  skip: (req: Request) => {
+    const internalIPs = process.env.INTERNAL_IPS?.split(',') || [];
+    return internalIPs.includes(req.ip || '');
+  }
+});
+
+
 router.post(
   '/login',
   authLimiter, // 5 attempts per 15 minutes
@@ -164,14 +217,14 @@ router.delete(
 
 router.post(
   '/forgot-password',
-  rateLimit({ windowMs: 3600000, max: 3 }), 
+  passwordResetLimiter, 
   validate(forgotPasswordSchema),
   authController.requestPasswordReset
 );
 router.post(
   '/reset-password',
-  rateLimit({ windowMs: 3600000, max: 3 }),
+  emailRateLimiter,
   validate(resetPasswordSchema),
-  authController.resetPassword // Add this controller method
+  authController.resetPassword 
 );
 export default router;

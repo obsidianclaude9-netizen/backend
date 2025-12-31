@@ -4,10 +4,11 @@ import { Server, Socket } from 'socket.io';
 import jwt from 'jsonwebtoken';
 import { logger } from '../utils/logger';
 import prisma from './database';
-
+import { RateLimiterMemory } from 'rate-limiter-flexible'
 let io: Server;
 
 interface SocketUser {
+  userId: string;   
   id: string;
   email: string;
   role: string;
@@ -16,6 +17,49 @@ interface SocketUser {
 interface AuthSocket extends Socket {
   user?: SocketUser;
 }
+const scanRateLimiter = new RateLimiterMemory({
+  points: 30,          // 30 scans
+  duration: 60,        // per 60 seconds
+  blockDuration: 120,  // Block for 2 minutes if exceeded
+});
+
+const orderRateLimiter = new RateLimiterMemory({
+  points: 10,          // 10 order updates
+  duration: 60,        // per 60 seconds
+  blockDuration: 300,  // Block for 5 minutes
+});
+
+const analyticsRateLimiter = new RateLimiterMemory({
+  points: 5,           // 5 analytics subscriptions
+  duration: 60,
+  blockDuration: 600,  // Block for 10 minutes
+});
+const checkRateLimit = async (
+  limiter: RateLimiterMemory,
+  key: string,
+  socket: AuthSocket,
+  eventName: string
+): Promise<boolean> => {
+  try {
+    await limiter.consume(key);
+    return true;
+  } catch (rejRes: any) {
+    logger.warn(`WebSocket rate limit exceeded`, {
+      userId: socket.user?.userId,
+      event: eventName,
+      ip: socket.handshake.address,
+      retryAfter: rejRes.msBeforeNext || 0
+    });
+
+    socket.emit('rate_limit_exceeded', {
+      event: eventName,
+      retryAfter: Math.ceil((rejRes.msBeforeNext || 0) / 1000),
+      message: 'Rate limit exceeded. Please slow down.'
+    });
+
+    return false;
+  }
+};
 
 export const initializeWebSocket = async (server: HTTPServer): Promise<void> => {
   io = new Server(server, {
@@ -81,6 +125,13 @@ export const initializeWebSocket = async (server: HTTPServer): Promise<void> => 
           socket.emit('error', { message: 'Unauthorized' });
           return;
         }
+        const allowed = await checkRateLimit(
+          scanRateLimiter,
+          socket.user.userId,
+          socket,
+          'scan:ticket'
+        );
+        if (!allowed) return;
 
         logger.info(`Ticket scan event from ${socket.user.email}:`, data);
         
@@ -101,6 +152,14 @@ export const initializeWebSocket = async (server: HTTPServer): Promise<void> => 
           socket.emit('error', { message: 'Unauthorized' });
           return;
         }
+         const allowed = await checkRateLimit(
+          orderRateLimiter,
+          socket.user.userId,
+          socket,
+          'order:update'
+        );
+
+        if (!allowed) return;
 
         logger.info(`Order update event from ${socket.user.email}:`, data);
         
@@ -125,7 +184,14 @@ export const initializeWebSocket = async (server: HTTPServer): Promise<void> => 
           socket.emit('error', { message: 'Insufficient permissions' });
           return;
         }
+         const allowed = await checkRateLimit(
+          analyticsRateLimiter,
+          socket.user.userId,
+          socket,
+          'analytics:subscribe'
+        );
 
+        if (!allowed) return;
         socket.join('analytics');
         logger.info(`User ${socket.user.email} subscribed to analytics`);
       } catch (error: any) {

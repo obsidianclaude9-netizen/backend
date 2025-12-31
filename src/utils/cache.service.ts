@@ -169,20 +169,54 @@ export class CacheService {
     }
   }
 
- async deletePattern(pattern: string): Promise<number> {
-  
-  if (!/^[a-zA-Z0-9:_-]+\*?$/.test(pattern)) {
-    throw new Error('Invalid cache pattern - only alphanumeric, :, _, -, * allowed');
+
+  async deletePattern(pattern: string): Promise<number> {
+    
+      const ALLOWED_PREFIXES = [
+        'analytics',
+        'api',
+        'blacklist',
+        'lockout',
+        'rl',
+        'cache',
+        'session'
+      ];
+
+    
+      const prefix = pattern.replace(/[*%]/g, '').split(':')[0];
+      
+      if (!ALLOWED_PREFIXES.includes(prefix)) {
+        throw new Error(`Cache pattern prefix '${prefix}' not in allowlist`);
+      }
+
+      
+      if (!/^[a-zA-Z0-9:_-]+\*?$/.test(pattern)) {
+        throw new Error('Invalid cache pattern - only alphanumeric, :, _, -, * allowed');
+      }
+
+      if (pattern.length > 100) {
+        throw new Error('Cache pattern too long (max 100 chars)');
+      }
+
+      
+      const likePattern = pattern
+        .replace(/\*/g, '%')
+        .replace(/_/g, '\\_')  
+        .replace(/%/g, '\\%'); 
+
+      const result = await prisma.$executeRaw`
+        DELETE FROM "AnalyticsCache" 
+        WHERE "cacheKey" LIKE ${likePattern} ESCAPE '\\'
+      `;
+
+      logger.info('Cache pattern deleted', { 
+        pattern, 
+        deletedCount: result,
+        sanitizedPattern: likePattern 
+      });
+
+      return Number(result);
   }
-  const likePattern = pattern.replace(/\*/g, '%').replace(/_/g, '\\_');
-  
-  const result = await prisma.$executeRawUnsafe(
-    'DELETE FROM "AnalyticsCache" WHERE "cacheKey" LIKE $1 ESCAPE \'\\\'',
-    likePattern
-  );
-  
-  return Number(result);
-}
 
   async del(key: string): Promise<boolean> {
     return await this.delete(key);

@@ -6,6 +6,7 @@ import prisma from '../../config/database';
 import { AppError } from '../../middleware/errorHandler';
 import { logger } from '../../utils/logger';
 import * as crypto from 'crypto';
+import { securityLogger } from '../../utils/security-logger';
 
 
 export class TwoFactorService {
@@ -148,6 +149,10 @@ export class TwoFactorService {
     });
 
     if (!isValid) {
+      throw new AppError(400, 'Invalid 2FA code');
+    }
+     if (!isValid) {
+      await securityLogger.logFailedTwoFactor(userId, undefined, attemptNumber);
       throw new AppError(400, 'Invalid 2FA code');
     }
 

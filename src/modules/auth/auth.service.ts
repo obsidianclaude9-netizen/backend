@@ -521,65 +521,69 @@ export class AuthService {
       enabled: false,
     };
   }
-  async requestPasswordReset(email: string) {
-    const user = await prisma.user.findUnique({ where: { email } });
-    if (!user) {
-      // Don't reveal if user exists
-      return { message: 'If account exists, reset email sent' };
-    }
 
-    const resetToken = crypto.randomBytes(32).toString('hex');
-    const hashedToken = await bcrypt.hash(resetToken, 12);
-    
-    await prisma.user.update({
-      where: { id: user.id },
-      data: {
-        resetToken: hashedToken,
-        resetTokenExpiry: new Date(Date.now() + 3600000), // 1 hour
-        tokenVersion: { increment: 1 } // ✅ Invalidate existing sessions
-      }
-    });
-
-    // Send email with resetToken (not hashed version)
-    await emailQueue.add('password-reset', {
-      email: user.email,
-      resetLink: `${process.env.FRONTEND_URL}/reset-password?token=${resetToken}`
-    });
-
-    return { message: 'If account exists, reset email sent' };
-  }
   async resetPassword(token: string, newPassword: string) {
-    const users = await prisma.user.findMany({
+    const tokenHash = crypto
+      .createHash('sha256')
+      .update(token)
+      .digest('hex');
+    const user = await prisma.user.findFirst({
       where: {
+        resetToken: tokenHash, 
         resetTokenExpiry: { gt: new Date() }
       }
     });
 
-    let matchedUser = null;
-    for (const user of users) {
-      if (user.resetToken && await bcrypt.compare(token, user.resetToken)) {
-        matchedUser = user;
-        break;
-      }
-    }
+    const delay = 50 + Math.floor(Math.random() * 50);
+    await new Promise(resolve => setTimeout(resolve, delay));
 
-    if (!matchedUser) {
+    if (!user) {
       throw new AppError(400, 'Invalid or expired reset token');
     }
 
     const hashedPassword = await bcrypt.hash(newPassword, 14);
     
     await prisma.user.update({
-      where: { id: matchedUser.id },
+      where: { id: user.id },
       data: {
         password: hashedPassword,
         resetToken: null,
         resetTokenExpiry: null,
-        tokenVersion: { increment: 1 } // ✅ Invalidate all sessions
+        tokenVersion: { increment: 1 }
       }
     });
 
     return { message: 'Password reset successful' };
+  }
+
+  async requestPasswordReset(email: string) {
+    const user = await prisma.user.findUnique({ where: { email } });
+    if (!user) {
+      await new Promise(resolve => setTimeout(resolve, 100));
+      return { message: 'If account exists, reset email sent' };
+    }
+
+    const resetToken = crypto.randomBytes(32).toString('hex');
+    const hashedToken = crypto
+      .createHash('sha256')
+      .update(resetToken)
+      .digest('hex');
+    
+    await prisma.user.update({
+      where: { id: user.id },
+      data: {
+        resetToken: hashedToken, 
+        resetTokenExpiry: new Date(Date.now() + 3600000),
+        tokenVersion: { increment: 1 }
+      }
+    });
+
+    await emailQueue.add('password-reset', {
+      email: user.email,
+      resetLink: `${process.env.FRONTEND_URL}/reset-password?token=${resetToken}`
+    });
+
+    return { message: 'If account exists, reset email sent' };
   }
 
 }

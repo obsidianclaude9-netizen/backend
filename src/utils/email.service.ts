@@ -2,25 +2,34 @@
 import nodemailer from 'nodemailer';
 import { logger } from './logger';
 import { AppError } from '../middleware/errorHandler';
+import DOMPurify from 'isomorphic-dompurify';
 
-/**
- * Validate email address format
- */
+const sanitizeHtml = (text: string): string => {
+  return DOMPurify.sanitize(text, {
+    ALLOWED_TAGS: [], 
+    ALLOWED_ATTR: [],
+    KEEP_CONTENT: true
+  });
+};
+const escapeHtml = (text: string): string => {
+  const map: Record<string, string> = {
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#039;'
+  };
+  return text.replace(/[&<>"']/g, (char) => map[char]);
+};
 const isValidEmail = (email: string): boolean => {
   const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
   return emailRegex.test(email);
 };
 
-/**
- * Sanitize email address
- */
 const sanitizeEmail = (email: string): string => {
   return email.trim().toLowerCase();
 };
 
-/**
- * Validate and sanitize multiple email addresses
- */
 const validateEmails = (emails: string | string[]): string[] => {
   const emailArray = Array.isArray(emails) ? emails : [emails];
   
@@ -97,57 +106,68 @@ class EmailService {
   }
 
   async sendOrderConfirmation(data: {
-    to: string;
-    firstName: string;
-    lastName: string;
-    orderNumber: string;
-    tickets: Array<{ ticketCode: string; gameSession: string; validUntil: string }>;
-  }) {
-    const html = `
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <style>
-          body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
-          .container { max-width: 600px; margin: 0 auto; padding: 20px; }
-          .header { background: #4CAF50; color: white; padding: 20px; text-align: center; }
-          .content { padding: 20px; background: #f9f9f9; }
-          .ticket { background: white; padding: 15px; margin: 10px 0; border-left: 4px solid #4CAF50; }
-          .footer { text-align: center; padding: 20px; color: #666; font-size: 12px; }
-        </style>
-      </head>
-      <body>
-        <div class="container">
-          <div class="header">
-            <h1>Order Confirmation</h1>
-          </div>
-          <div class="content">
-            <p>Hi ${data.firstName} ${data.lastName},</p>
-            <p>Thank you for your order! Your order number is: <strong>${data.orderNumber}</strong></p>
-            <h3>Your Tickets:</h3>
-            ${data.tickets.map(ticket => `
-              <div class="ticket">
-                <p><strong>Ticket Code:</strong> ${ticket.ticketCode}</p>
-                <p><strong>Game Session:</strong> ${ticket.gameSession}</p>
-                <p><strong>Valid Until:</strong> ${new Date(ticket.validUntil).toLocaleDateString()}</p>
-              </div>
-            `).join('')}
-            <p>Please present your ticket codes at the venue.</p>
-          </div>
-          <div class="footer">
-            <p>JGPNR Paintball © ${new Date().getFullYear()}</p>
-          </div>
-        </div>
-      </body>
-      </html>
-    `;
+      to: string;
+      firstName: string;
+      lastName: string;
+      orderNumber: string;
+      tickets: Array<{ ticketCode: string; gameSession: string; validUntil: string }>;
+    }) {
+      
+      const safeName = escapeHtml(`${sanitizeHtml(data.firstName)} ${sanitizeHtml(data.lastName)}`);
+      const safeOrderNumber = escapeHtml(sanitizeHtml(data.orderNumber));
 
-    return this.sendEmail({
-      to: data.to,
-      subject: `Order Confirmation - ${data.orderNumber}`,
-      html,
-    });
+      const html = `
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <style>
+            body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+            .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+            .header { background: #4CAF50; color: white; padding: 20px; text-align: center; }
+            .content { padding: 20px; background: #f9f9f9; }
+            .ticket { background: white; padding: 15px; margin: 10px 0; border-left: 4px solid #4CAF50; }
+            .footer { text-align: center; padding: 20px; color: #666; font-size: 12px; }
+          </style>
+        </head>
+        <body>
+          <div class="container">
+            <div class="header">
+              <h1>Order Confirmation</h1>
+            </div>
+            <div class="content">
+              <p>Hi ${safeName},</p>
+              <p>Thank you for your order! Your order number is: <strong>${safeOrderNumber}</strong></p>
+              <h3>Your Tickets:</h3>
+              ${data.tickets.map(ticket => {
+                const safeCode = escapeHtml(sanitizeHtml(ticket.ticketCode));
+                const safeSession = escapeHtml(sanitizeHtml(ticket.gameSession));
+                const safeDate = escapeHtml(new Date(ticket.validUntil).toLocaleDateString());
+                
+                return `
+                  <div class="ticket">
+                    <p><strong>Ticket Code:</strong> ${safeCode}</p>
+                    <p><strong>Game Session:</strong> ${safeSession}</p>
+                    <p><strong>Valid Until:</strong> ${safeDate}</p>
+                  </div>
+                `;
+              }).join('')}
+              <p>Please present your ticket codes at the venue.</p>
+            </div>
+            <div class="footer">
+              <p>JGPNR Paintball © ${new Date().getFullYear()}</p>
+            </div>
+          </div>
+        </body>
+        </html>
+      `;
+
+      return this.sendEmail({
+        to: data.to,
+        subject: `Order Confirmation - ${safeOrderNumber}`,
+        html,
+      });
   }
+
 
   async sendPaymentReceipt(data: {
     to: string;
@@ -158,30 +178,35 @@ class EmailService {
     paymentReference: string;
     paidAt: string;
   }) {
+      const safeName = escapeHtml(`${sanitizeHtml(data.firstName)} ${sanitizeHtml(data.lastName)}`);
+      const safeOrderNumber = escapeHtml(sanitizeHtml(data.orderNumber));
+      const safeReference = escapeHtml(sanitizeHtml(data.paymentReference));
+      const safeAmount = escapeHtml(sanitizeHtml(data.amount.toFixed(2)))
+      const safePaidAt = escapeHtml(sanitizeHtml(data.paidAt))
     const html = `
       <!DOCTYPE html>
       <html>
       <body>
         <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
           <h2>Payment Receipt</h2>
-          <p>Hi ${data.firstName} ${data.lastName},</p>
+          <p>Hi ${safeName},</p>
           <p>Your payment has been received successfully.</p>
           <table style="width: 100%; border-collapse: collapse; margin: 20px 0;">
             <tr style="background: #f9f9f9;">
               <td style="padding: 10px; border: 1px solid #ddd;"><strong>Order Number:</strong></td>
-              <td style="padding: 10px; border: 1px solid #ddd;">${data.orderNumber}</td>
+              <td style="padding: 10px; border: 1px solid #ddd;">${safeOrderNumber}</td>
             </tr>
             <tr>
               <td style="padding: 10px; border: 1px solid #ddd;"><strong>Amount Paid:</strong></td>
-              <td style="padding: 10px; border: 1px solid #ddd;">₦${data.amount.toFixed(2)}</td>
+              <td style="padding: 10px; border: 1px solid #ddd;">₦${safeAmount}</td>
             </tr>
             <tr style="background: #f9f9f9;">
               <td style="padding: 10px; border: 1px solid #ddd;"><strong>Payment Reference:</strong></td>
-              <td style="padding: 10px; border: 1px solid #ddd;">${data.paymentReference}</td>
+              <td style="padding: 10px; border: 1px solid #ddd;">${safeReference}</td>
             </tr>
             <tr>
               <td style="padding: 10px; border: 1px solid #ddd;"><strong>Date:</strong></td>
-              <td style="padding: 10px; border: 1px solid #ddd;">${new Date(data.paidAt).toLocaleString()}</td>
+              <td style="padding: 10px; border: 1px solid #ddd;">${new Date(safePaidAt).toLocaleString()}</td>
             </tr>
           </table>
           <p>Thank you for your payment!</p>
@@ -205,19 +230,24 @@ class EmailService {
     validUntil: string;
     remainingScans: number;
   }) {
+    const safeName = escapeHtml(`${sanitizeHtml(data.firstName)}`);
+    const safeTicketCode = escapeHtml(`${sanitizeHtml(data.ticketCode)}`)
+    const safeGameSession = escapeHtml(`${sanitizeHtml(data.gameSession)}`)
+    const safeValidUntil = escapeHtml(`${sanitizeHtml(data.validUntil)}`)
+    const safeRemainingScans = escapeHtml(`${sanitizeHtml(data.remainingScans.toFixed(2))}`)
     const html = `
       <!DOCTYPE html>
       <html>
       <body>
         <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
           <h2>Ticket Reminder</h2>
-          <p>Hi ${data.firstName},</p>
+          <p>Hi ${safeName},</p>
           <p>This is a reminder about your upcoming game session.</p>
           <div style="background: #f0f8ff; padding: 20px; margin: 20px 0; border-radius: 5px;">
-            <p><strong>Ticket Code:</strong> ${data.ticketCode}</p>
-            <p><strong>Game Session:</strong> ${data.gameSession}</p>
-            <p><strong>Valid Until:</strong> ${new Date(data.validUntil).toLocaleDateString()}</p>
-            <p><strong>Remaining Scans:</strong> ${data.remainingScans}</p>
+            <p><strong>Ticket Code:</strong> ${safeTicketCode}</p>
+            <p><strong>Game Session:</strong> ${safeGameSession}</p>
+            <p><strong>Valid Until:</strong> ${new Date(safeValidUntil).toLocaleDateString()}</p>
+            <p><strong>Remaining Scans:</strong> ${safeRemainingScans}</p>
           </div>
           <p>See you at the venue!</p>
         </div>
@@ -238,17 +268,20 @@ class EmailService {
     ticketCode: string;
     gameSession: string;
   }) {
+    const safeName = escapeHtml(`${sanitizeHtml(data.firstName)}`);
+    const safeTicketCode = escapeHtml(`${sanitizeHtml(data.ticketCode)}`)
+    const safeGameSession = escapeHtml(`${sanitizeHtml(data.gameSession)}`)
     const html = `
       <!DOCTYPE html>
       <html>
       <body>
         <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
           <h2>Ticket Expiration Notice</h2>
-          <p>Hi ${data.firstName},</p>
+          <p>Hi ${safeName},</p>
           <p>Your ticket has expired.</p>
           <div style="background: #fff3cd; padding: 20px; margin: 20px 0; border-radius: 5px;">
-            <p><strong>Ticket Code:</strong> ${data.ticketCode}</p>
-            <p><strong>Game Session:</strong> ${data.gameSession}</p>
+            <p><strong>Ticket Code:</strong> ${safeTicketCode}</p>
+            <p><strong>Game Session:</strong> ${safeGameSession}</p>
           </div>
           <p>Please contact us if you need assistance.</p>
         </div>
@@ -269,16 +302,18 @@ class EmailService {
     lastName: string;
     resetLink: string;
   }) {
+    const safeName = escapeHtml(`${sanitizeHtml(data.firstName)} ${sanitizeHtml(data.lastName)}`);
+    const safeResetLink = escapeHtml(`${sanitizeHtml(data.resetLink)}`);
     const html = `
       <!DOCTYPE html>
       <html>
       <body>
         <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
           <h2>Password Reset Request</h2>
-          <p>Hi ${data.firstName} ${data.lastName},</p>
+          <p>Hi ${safeName},</p>
           <p>You requested to reset your password. Click the link below to proceed:</p>
           <p style="margin: 30px 0;">
-            <a href="${data.resetLink}" 
+            <a href="${safeResetLink}" 
                style="background: #4CAF50; color: white; padding: 12px 30px; 
                       text-decoration: none; border-radius: 5px; display: inline-block;">
               Reset Password

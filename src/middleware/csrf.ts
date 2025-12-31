@@ -21,5 +21,27 @@ export const csrfErrorHandler = (err: any, _req: Request, res: Response, next: N
   }
   next(err);
 };
+export const autoCSRFProtection = (
+  req: Request,
+  res: Response,
+  next: NextFunction
+) => {
+  const stateChangingMethods = ['POST', 'PUT', 'PATCH', 'DELETE'];
+  const safePaths = [
+    '/api/auth/login',         // Login has separate protection
+    '/api/auth/refresh',       // Refresh token flow
+    '/api/payment/webhook',    // External webhooks
+    '/api/health',             // Health check
+  ];
+
+  if (
+    !stateChangingMethods.includes(req.method) ||
+    safePaths.some(path => req.path.startsWith(path))
+  ) {
+    return next();
+  }
+
+  return csrfProtection(req, res, next);
+};
 
 export { csrfProtection };

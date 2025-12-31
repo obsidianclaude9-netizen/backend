@@ -2,13 +2,14 @@
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
+import { configureSecurityHeaders } from './middleware/security-headers';
 import path from 'path';
 import cookieParser from 'cookie-parser';
 
 import { errorHandler, notFoundHandler } from './middleware/errorHandler';
 import { sanitizeInput } from './middleware/validate';
 import { authenticate, authorizeFileAccess } from './middleware/auth';
-import { csrfProtection, getCsrfToken, csrfErrorHandler } from './middleware/csrf';
+import { csrfProtection, getCsrfToken, csrfErrorHandler, autoCSRFProtection } from './middleware/csrf';
 import rateLimit from 'express-rate-limit';
 import * as paymentController from './modules/payment/payment.controller';
 import { Request, Response, NextFunction } from 'express';
@@ -40,8 +41,10 @@ import batchRoutes from './modules/batch/batch.routes';
 import monitoringRoutes from './modules/monitoring/monitoring.routes';
 import paymentRoutes from './modules/payment/payment.routes';
 import auditRoutes from './modules/audit/audit.routes';
+import { startAuditCleanup, stopAuditCleanup } from './jobs/audit-cleanup.job';
 
 const app = express();
+configureSecurityHeaders(app);
 const API_VERSION = 'v1';
 const webhookLimiter = rateLimit({
   windowMs: 60 * 1000,
@@ -52,11 +55,14 @@ const webhookLimiter = rateLimit({
 });
 
 initializeSentry(app);
+
 const sentryMiddleware = getSentryMiddleware();
+
 app.use(requestIdMiddleware);
 app.use(sentryMiddleware.requestHandler);
 app.use(sentryMiddleware.tracingHandler);
 
+app.use(autoCSRFProtection);
 app.use('/api/payments/webhook', express.json({
   verify: (req: any, _res, buf) => {
     req.rawBody = buf.toString('utf8');
@@ -133,10 +139,13 @@ app.use(cors({
   maxAge: 86400,
 }));
 
+
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use(cookieParser());
 app.use(sanitizeInput);
+
+startAuditCleanup();
 
 if (process.env.TRUST_PROXY === 'true') {
   const trustedProxies = process.env.TRUSTED_PROXY_IPS?.split(',') || ['127.0.0.1', '::1'];
@@ -191,7 +200,6 @@ app.use('/uploads/avatars',
   express.static(path.join(__dirname, '../uploads/avatars'))
 );
 
-app.use(csrfErrorHandler);
 app.use(notFoundHandler);
 app.use(sentryMiddleware.errorHandler);
 app.use((err: Error & { statusCode?: number }, _req: Request, res: Response, _next: NextFunction) => {
@@ -204,6 +212,10 @@ app.use((err: Error & { statusCode?: number }, _req: Request, res: Response, _ne
     ...(isDev && { stack: err.stack }),
   });
 });
+app.use(csrfErrorHandler);
 app.use(errorHandler);
 
+process.on('SIGTERM', async () => {
+  stopAuditCleanup();
+});
 export default app;

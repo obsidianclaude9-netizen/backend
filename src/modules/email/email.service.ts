@@ -79,9 +79,6 @@ export class EmailService {
     return template;
   }
 
-  /**
-   * List templates
-   */
   async listTemplates(page = 1, limit = 20) {
     const skip = (page - 1) * limit;
 
@@ -100,9 +97,6 @@ export class EmailService {
     };
   }
 
-  /**
-   * Get template
-   */
   async getTemplate(templateId: string) {
     const template = await prisma.emailTemplate.findUnique({
       where: { id: templateId },
@@ -115,9 +109,7 @@ export class EmailService {
     return template;
   }
 
-  /**
-   * Update template
-   */
+
   async updateTemplate(templateId: string, data: UpdateTemplateInput) {
     if (data.body) {
       data.body = this.sanitizeHTML(data.body);
@@ -132,9 +124,7 @@ export class EmailService {
     return template;
   }
 
-  /**
-   * Delete template
-   */
+  
   async deleteTemplate(templateId: string) {
     await prisma.emailTemplate.delete({
       where: { id: templateId },
@@ -144,9 +134,7 @@ export class EmailService {
     return { message: 'Template deleted successfully' };
   }
 
-  /**
-   * Send individual email
-   */
+  
   async sendSingleEmail(data: SendEmailInput) {
     let emailBody = data.body;
     let emailSubject = data.subject;
@@ -172,9 +160,7 @@ export class EmailService {
     return { message: 'Email queued successfully' };
   }
 
-  /**
-   * Create campaign
-   */
+ 
   async createCampaign(data: CreateCampaignInput) {
     let body = data.body;
 
@@ -196,9 +182,6 @@ export class EmailService {
     return campaign;
   }
 
-  /**
-   * Send campaign
-   */
   async sendCampaign(campaignId: string) {
     const campaign = await prisma.campaign.findUnique({
       where: { id: campaignId },
@@ -241,9 +224,6 @@ export class EmailService {
     return { message: `Campaign queued to ${subscribers.length} subscribers` };
   }
 
-  /**
-   * List campaigns
-   */
   async listCampaigns(page = 1, limit = 20) {
     const skip = (page - 1) * limit;
 
@@ -265,9 +245,6 @@ export class EmailService {
     };
   }
 
-  /**
-   * Test SMTP configuration
-   */
   async testSMTP(email: string) {
     try {
       await sendEmail({

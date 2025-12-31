@@ -7,7 +7,8 @@ import { monitoring } from '../utils/monitoring.service';
 import prisma from '../config/database';
 import { cacheService } from '../utils/cache.service';
 import path from 'path';
-
+import { emailQueue } from '../config/queue';
+import { geolocationService } from '../utils/geolocation';
 export interface JWTPayload {
   userId: string;
   email: string;
@@ -46,6 +47,7 @@ export const blacklistToken = async (token: string, expiresIn: number): Promise<
   }
 };
 
+
 export const authenticate = async (
   req: Request,
   res: Response,
@@ -72,61 +74,143 @@ export const authenticate = async (
     // Verify JWT
     const decoded = jwt.verify(token, process.env.JWT_SECRET!) as JWTPayload;
 
-    // Fetch user & verify active status + token version
-    const user = await prisma.user.findUnique({
-      where: { id: decoded.userId },
-      select: { 
-        id: true, 
-        email: true, 
-        role: true, 
-        isActive: true, 
-        tokenVersion: true 
+  
+    const activeSession = await prisma.activeSession.findFirst({
+      where: {
+        token,
+        userId: decoded.userId,
+        expiresAt: { gt: new Date() }
       },
+      include: {
+        user: {
+          select: {
+            id: true,
+            email: true,
+            role: true,
+            isActive: true,
+            tokenVersion: true,
+            lockedUntil: true  
+          }
+        }
+      }
     });
 
-    if (!user) {
-      logger.warn('Token for non-existent user', { 
-        userId: decoded.userId, 
-        ip: req.ip 
+    if (!activeSession) {
+      logger.warn('Token has no active session', {
+        userId: decoded.userId,
+        ip: req.ip
       });
+      res.status(401).json({ error: 'Session expired or terminated' });
+      return;
+    }
+
+    const user = activeSession.user;
+
+    if (!user) {
+      logger.warn('Session for deleted user', {
+        userId: decoded.userId,
+        ip: req.ip
+      });
+      await prisma.activeSession.delete({ where: { id: activeSession.id } });
       res.status(401).json({ error: 'User not found' });
       return;
     }
 
+    if (user.lockedUntil && user.lockedUntil > new Date()) {
+      logger.warn('Locked account attempted access', {
+        userId: user.id,
+        lockedUntil: user.lockedUntil,
+        ip: req.ip
+      });
+      res.status(403).json({ 
+        error: 'Account locked',
+        unlockAt: user.lockedUntil.toISOString()
+      });
+      return;
+    }
 
-   if (decoded.tokenVersion !== user.tokenVersion) {
-    
+    if (decoded.tokenVersion !== user.tokenVersion) {
       if (decoded.iat) {
-        const tokenIssuedDate = new Date(decoded.iat * 1000); 
+        const tokenIssuedDate = new Date(decoded.iat * 1000);
         
         const versionChangeLog = await prisma.auditLog.findFirst({
           where: {
             userId: user.id,
             action: 'PASSWORD_CHANGED',
-            createdAt: { 
-              gte: tokenIssuedDate
-            }
+            createdAt: { gte: tokenIssuedDate }
           }
         });
         
-        if (versionChangeLog && decoded.exp) { 
+        if (versionChangeLog && decoded.exp) {
           const remainingTTL = Math.max(0, decoded.exp - Math.floor(Date.now() / 1000));
-            
           if (remainingTTL > 0) {
             await blacklistToken(token, remainingTTL);
           }
+          // ✅ Also delete the session
+          await prisma.activeSession.delete({ where: { id: activeSession.id } });
         }
       }
       
       res.status(401).json({ error: 'Token invalidated due to password change' });
       return;
     }
+
     if (!user.isActive) {
-      logger.warn('Inactive user attempted access', { 
+      logger.warn('Inactive user attempted access', {
         userId: user.id,
-        ip: req.ip 
+        ip: req.ip
       });
+      await prisma.activeSession.delete({ where: { id: activeSession.id } });
       res.status(403).json({ error: 'Account is not active' });
+      return;
+    }
+
+    await prisma.activeSession.update({
+      where: { id: activeSession.id },
+      data: { lastActive: new Date() }
+    }).catch((err) => {
+      logger.error('Failed to update session lastActive', { error: err });
+      // Non-critical, continue
+    });
+
+    const { suspicious, reason } = await geolocationService.checkSuspiciousActivity(
+      user.id,
+      req.ip || 'unknown'
+    );
+
+    if (suspicious) {
+      logger.error('Suspicious session activity detected', {
+        userId: user.id,
+        reason,
+        ip: req.ip,
+        userAgent: req.get('user-agent')
+      });
+
+      await prisma.user.update({
+        where: { id: user.id },
+        data: {
+          lockedUntil: new Date(Date.now() + 3600000), // 1 hour
+          tokenVersion: { increment: 1 }
+        }
+      });
+
+      await prisma.activeSession.deleteMany({
+        where: { userId: user.id }
+      });
+
+      await emailQueue.add('security-alert', {
+        to: user.email,
+        subject: '🚨 Suspicious Account Activity Detected',
+        userName: `${user.firstName} ${user.lastName}`,
+        reason,
+        timestamp: new Date().toISOString(),
+        ipAddress: req.ip
+      });
+
+      res.status(403).json({
+        error: 'Suspicious activity detected. Account temporarily locked.',
+        reason: 'Security measure'
+      });
       return;
     }
 
